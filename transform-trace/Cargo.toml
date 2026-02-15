@@ -1,0 +1,13 @@
+[package]
+name = "transform-trace"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+regex = "1.12.3"
+
+[build-dependencies]
+bindgen = "0.72.1"
