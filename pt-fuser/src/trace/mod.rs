@@ -78,38 +78,28 @@ impl Display for Metrics {
     }
 }
 
-const METRICS_ONE: Metrics = Metrics {
-    ts: 1,
-    cycles: 1,
-    insn_count: 1,
-};
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MetricsRange {
-    // Both start and end are inclusive
+    // start is inclusive and end is exclusive
     pub start: Metrics,
     pub end: Metrics,
 }
 
 impl MetricsRange {
     pub fn total_time(&self) -> u64 {
-        self.end.ts - self.start.ts + 1
+        self.end.ts - self.start.ts
     }
 
     pub fn total_cycles(&self) -> u64 {
-        self.end.cycles - self.start.cycles + 1
+        self.end.cycles - self.start.cycles
     }
 
     pub fn total_insn(&self) -> u64 {
-        self.end.insn_count - self.start.insn_count + 1
+        self.end.insn_count - self.start.insn_count
     }
 
     pub fn from(start: Metrics, end: Metrics) -> Self {
         Self { start, end }
-    }
-
-    pub fn includes(&self, metrics: Metrics) -> bool {
-        self.start.ts <= metrics.ts && metrics.ts <= self.end.ts
     }
 
     pub fn includes_range(&self, other: &MetricsRange) -> bool {
@@ -168,7 +158,7 @@ impl Frame {
                             let before = Straightline {
                                 metrics: MetricsRange::from(
                                     straightline.metrics.start,
-                                    child.metrics.start - METRICS_ONE,
+                                    child.metrics.start,
                                 ),
                             };
                             self.chunks.insert(i, before.into());
@@ -177,7 +167,7 @@ impl Frame {
                         if child.metrics.end.ts < straightline.metrics.end.ts {
                             let after = Straightline {
                                 metrics: MetricsRange::from(
-                                    child.metrics.end + METRICS_ONE,
+                                    child.metrics.end,
                                     straightline.metrics.end,
                                 ),
                             };

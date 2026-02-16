@@ -47,15 +47,29 @@ pub(crate) const TEST_SYMBOL: LazyLock<SymbolInfo> = LazyLock::new(|| SymbolInfo
     size: 0x100,
 });
 
+pub(crate) const METRICS_ONE: Metrics = Metrics {
+    ts: 1,
+    cycles: 1,
+    insn_count: 1,
+};
+
 #[test]
 fn range_totals() {
     let frame = Chunk::Frame(Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone()));
-    assert_eq!(SAMPLE_RANGE.total_time(), 101);
-    assert_eq!(SAMPLE_RANGE.total_cycles(), 301);
-    assert_eq!(SAMPLE_RANGE.total_insn(), 801);
+    assert_eq!(SAMPLE_RANGE.total_time(), 100);
+    assert_eq!(SAMPLE_RANGE.total_cycles(), 300);
+    assert_eq!(SAMPLE_RANGE.total_insn(), 800);
     assert_eq!(frame.total_time(), SAMPLE_RANGE.total_time());
     assert_eq!(frame.total_cycles(), SAMPLE_RANGE.total_cycles());
     assert_eq!(frame.total_insn(), SAMPLE_RANGE.total_insn());
+}
+
+#[test]
+fn zero_duration_frame() {
+    let frame = MetricsRange::from(SAMPLE_RANGE.start, SAMPLE_RANGE.start);
+    assert_eq!(frame.total_time(), 0);
+    assert_eq!(frame.total_cycles(), 0);
+    assert_eq!(frame.total_insn(), 0);
 }
 
 #[test]
@@ -103,14 +117,14 @@ fn child_overlapping_complex() {
     let beginning = Frame::new(
         MetricsRange::from(
             SAMPLE_RANGE.start,
-            INNER_RANGE1.start - METRICS_ONE - METRICS_ONE,
+            INNER_RANGE1.start - METRICS_ONE,
         ),
         TEST_SYMBOL.clone(),
     );
     outer.add_child(beginning).unwrap();
     let end = Frame::new(
         MetricsRange::from(
-            INNER_RANGE1.end + METRICS_ONE + METRICS_ONE,
+            INNER_RANGE1.end + METRICS_ONE,
             SAMPLE_RANGE.end,
         ),
         TEST_SYMBOL.clone(),
@@ -154,13 +168,13 @@ fn add_child_no_space() {
     let beginning = Frame::new(
         MetricsRange::from(
             SAMPLE_RANGE.start + METRICS_ONE,
-            INNER_RANGE1.start,
+            INNER_RANGE1.start + METRICS_ONE,
         ),
         TEST_SYMBOL.clone(),
     );
     let end = Frame::new(
         MetricsRange::from(
-            INNER_RANGE1.end,
+            INNER_RANGE1.end - METRICS_ONE,
             SAMPLE_RANGE.end - METRICS_ONE,
         ),
         TEST_SYMBOL.clone(),

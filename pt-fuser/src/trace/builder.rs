@@ -126,8 +126,7 @@ impl Display for Error {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::trace::METRICS_ONE;
-    use trace::test::{INNER_RANGE1, INNER_RANGE2, SAMPLE_RANGE, TEST_SYMBOL};
+    use trace::test::{INNER_RANGE1, INNER_RANGE2, SAMPLE_RANGE, TEST_SYMBOL, METRICS_ONE};
 
     #[test]
     fn complete_empty_frame() {
