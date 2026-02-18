@@ -8,6 +8,9 @@ crate-type = ["dylib"]
 
 [dependencies]
 regex = "1.12.3"
+pt-fuser = { path = "../pt-fuser" }
+tracing = "0.1.44"
+tracing-subscriber = "0.3.22"
 
 [build-dependencies]
 bindgen = "0.72.1"

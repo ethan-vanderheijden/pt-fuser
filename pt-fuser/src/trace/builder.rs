@@ -95,15 +95,23 @@ impl TraceBuilder {
         self.last_metrics = metrics;
         Ok(())
     }
+
+    pub fn callstack_depth(&self) -> usize {
+        self.callstack.len() + 1
+    }
+
+    pub fn current_frame_symbol(&self) -> &SymbolInfo {
+        &self.current_frame.symbol
+    }
 }
 
-enum BuilderResult {
+pub enum BuilderResult {
     Builder(TraceBuilder),
     Completed(Trace),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-enum Error {
+pub enum Error {
     TraceError(trace::Error),
     OutOfOrder(Metrics, Metrics),
 }

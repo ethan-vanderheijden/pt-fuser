@@ -1,15 +1,16 @@
-mod builder;
+pub mod builder;
 #[cfg(test)]
 mod test;
 
-pub use builder::TraceBuilder;
-
 use std::{
-    fmt::Display,
-    ops::{Add, AddAssign, Sub, SubAssign},
+    fmt::Display, io::Read, ops::{Add, AddAssign, Sub, SubAssign}
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+use flate2::Compression;
+use flexbuffers::FlexbufferSerializer;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Metrics {
     pub ts: u64,
     pub cycles: u64,
@@ -78,7 +79,7 @@ impl Display for Metrics {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MetricsRange {
     // start is inclusive and end is exclusive
     pub start: Metrics,
@@ -113,19 +114,19 @@ impl Display for MetricsRange {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SymbolInfo {
     pub name: String,
     pub offset: u64,
     pub size: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Straightline {
     pub metrics: MetricsRange,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Frame {
     pub metrics: MetricsRange,
     pub symbol: SymbolInfo,
@@ -198,7 +199,7 @@ impl Frame {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Chunk {
     Frame(Frame),
     Straightline(Straightline),
@@ -239,7 +240,7 @@ impl From<Frame> for Chunk {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Event {
     metrics: Metrics,
     description: String,
@@ -266,7 +267,7 @@ impl Ord for Event {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Trace {
     root: Frame,
     event_timeline: Vec<Event>,
@@ -287,6 +288,32 @@ impl Trace {
 
     pub fn get_events(&self) -> &[Event] {
         &self.event_timeline
+    }
+
+    pub fn bin_serialize(&self, gzip: bool) -> Result<Vec<u8>, flexbuffers::SerializationError> {
+        let mut serializer = FlexbufferSerializer::new();
+        self.serialize(&mut serializer)?;
+        if gzip {
+            let encoded = serializer.take_buffer();
+            let mut encoder = flate2::read::GzEncoder::new(&encoded[..], Compression::default());
+            let mut result = Vec::new();
+            encoder.read_to_end(&mut result).unwrap();
+            Ok(result)
+        } else {
+            Ok(serializer.take_buffer())
+        }
+    }
+
+    pub fn bin_deserialize(data: &[u8], gzip: bool) -> Result<Self, flexbuffers::DeserializationError> {
+        let decoded_data = if gzip {
+            let mut decoder = flate2::read::GzDecoder::new(data);
+            let mut decoded = Vec::new();
+            decoder.read_to_end(&mut decoded).unwrap();
+            decoded
+        } else {
+            data.to_vec()
+        };
+        flexbuffers::from_slice(&decoded_data)
     }
 }
 
