@@ -3,7 +3,9 @@ pub mod builder;
 mod test;
 
 use std::{
-    fmt::Display, io::Read, ops::{Add, AddAssign, Sub, SubAssign}
+    fmt::Display,
+    io::Read,
+    ops::{Add, AddAssign, Sub, SubAssign},
 };
 
 use flate2::Compression;
@@ -59,7 +61,7 @@ impl SubAssign for Metrics {
 
 impl PartialOrd for Metrics {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.ts.cmp(&other.ts))
+        Some(self.cmp(other))
     }
 }
 
@@ -121,6 +123,24 @@ pub struct SymbolInfo {
     pub size: u64,
 }
 
+impl SymbolInfo {
+    pub fn contains(&self, addr: u64) -> bool {
+        self.offset <= addr && addr < self.offset + self.size
+    }
+}
+
+impl Display for SymbolInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[0x{:x} - 0x{:x}] {}",
+            self.offset,
+            self.offset + self.size,
+            self.name
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Straightline {
     pub metrics: MetricsRange,
@@ -136,16 +156,10 @@ pub struct Frame {
 
 impl Frame {
     pub fn new(metrics: MetricsRange, symbol: SymbolInfo) -> Self {
-        let metrics_clone = metrics.clone();
         Self {
             metrics,
             symbol,
-            chunks: vec![
-                Straightline {
-                    metrics: metrics_clone,
-                }
-                .into(),
-            ],
+            chunks: vec![Straightline { metrics }.into()],
         }
     }
 
@@ -257,7 +271,7 @@ impl Event {
 
 impl PartialOrd for Event {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.metrics.cmp(&other.metrics))
+        Some(self.cmp(other))
     }
 }
 
@@ -304,7 +318,10 @@ impl Trace {
         }
     }
 
-    pub fn bin_deserialize(data: &[u8], gzip: bool) -> Result<Self, flexbuffers::DeserializationError> {
+    pub fn bin_deserialize(
+        data: &[u8],
+        gzip: bool,
+    ) -> Result<Self, flexbuffers::DeserializationError> {
         let decoded_data = if gzip {
             let mut decoder = flate2::read::GzDecoder::new(data);
             let mut decoded = Vec::new();

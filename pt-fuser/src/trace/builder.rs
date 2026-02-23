@@ -1,5 +1,3 @@
-use std::{fmt::Display, mem};
-
 use crate::trace::{self, Event, Frame, Metrics, MetricsRange, SymbolInfo, Trace};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -10,13 +8,13 @@ struct IncompleteFrame {
 }
 
 impl IncompleteFrame {
-    fn complete(self, end_metrics: Metrics) -> Result<Frame, Error> {
+    fn complete(self, end_metrics: Metrics) -> Result<Frame, trace::Error> {
         let mut completed = Frame::new(
             MetricsRange::from(self.start_metrics, end_metrics),
             self.symbol,
         );
         for child in self.child_frames.into_iter().rev() {
-            completed.add_child(child).map_err(Error::TraceError)?;
+            completed.add_child(child)?;
         }
         Ok(completed)
     }
@@ -31,14 +29,15 @@ pub struct TraceBuilder {
 }
 
 impl TraceBuilder {
-    fn ensure_monotonic(&self, new_metrics: Metrics) -> Result<(), Error> {
+    fn ensure_monotonic(&self, new_metrics: Metrics) {
         if new_metrics.ts < self.last_metrics.ts
             || new_metrics.cycles < self.last_metrics.cycles
             || new_metrics.insn_count < self.last_metrics.insn_count
         {
-            Err(Error::OutOfOrder(self.last_metrics, new_metrics))
-        } else {
-            Ok(())
+            panic!(
+                "Metrics must increase monotonically. Previous: {}, New: {}",
+                self.last_metrics, new_metrics
+            );
         }
     }
 
@@ -55,21 +54,20 @@ impl TraceBuilder {
         }
     }
 
-    pub fn push_frame(&mut self, metrics: Metrics, symbol: SymbolInfo) -> Result<(), Error> {
-        self.ensure_monotonic(metrics)?;
+    pub fn push_frame(&mut self, metrics: Metrics, symbol: SymbolInfo) {
+        self.ensure_monotonic(metrics);
         let new_frame = IncompleteFrame {
             start_metrics: metrics,
             child_frames: Vec::new(),
             symbol,
         };
-        let old_frame = mem::replace(&mut self.current_frame, new_frame);
+        let old_frame = std::mem::replace(&mut self.current_frame, new_frame);
         self.callstack.push(old_frame);
         self.last_metrics = metrics;
-        Ok(())
     }
 
-    pub fn complete_frame(mut self, end_metrics: Metrics) -> Result<BuilderResult, Error> {
-        self.ensure_monotonic(end_metrics)?;
+    pub fn complete_frame(mut self, end_metrics: Metrics) -> Result<BuilderResult, trace::Error> {
+        self.ensure_monotonic(end_metrics);
         if self.callstack.is_empty() {
             let completed_frame = self.current_frame.complete(end_metrics)?;
             Ok(BuilderResult::Completed(Trace::new(
@@ -78,7 +76,7 @@ impl TraceBuilder {
             )))
         } else {
             let prev = self.callstack.pop().unwrap();
-            let current_frame = mem::replace(&mut self.current_frame, prev);
+            let current_frame = std::mem::replace(&mut self.current_frame, prev);
             let completed_frame = current_frame.complete(end_metrics)?;
             self.current_frame.child_frames.push(completed_frame);
             self.last_metrics = end_metrics;
@@ -86,22 +84,26 @@ impl TraceBuilder {
         }
     }
 
-    pub fn push_event(&mut self, metrics: Metrics, description: String) -> Result<(), Error> {
-        self.ensure_monotonic(metrics)?;
+    pub fn push_event(&mut self, metrics: Metrics, description: String) {
+        self.ensure_monotonic(metrics);
         self.events.push(Event {
             metrics,
             description,
         });
         self.last_metrics = metrics;
-        Ok(())
     }
 
     pub fn callstack_depth(&self) -> usize {
         self.callstack.len() + 1
     }
 
-    pub fn current_frame_symbol(&self) -> &SymbolInfo {
-        &self.current_frame.symbol
+    /// index = 0 means top of the callstack. Higher indices go down the callstack.
+    pub fn get_frame_symbol(&self, index: usize) -> &SymbolInfo {
+        if index == 0 {
+            &self.current_frame.symbol
+        } else {
+            &self.callstack[self.callstack.len() - index].symbol
+        }
     }
 }
 
@@ -110,31 +112,10 @@ pub enum BuilderResult {
     Completed(Trace),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum Error {
-    TraceError(trace::Error),
-    OutOfOrder(Metrics, Metrics),
-}
-
-impl Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::TraceError(e) => write!(f, "Error producing trace: {}", e),
-            Error::OutOfOrder(prev, new) => {
-                write!(
-                    f,
-                    "Metrics must increase monotonically. Previous: {}, New: {}",
-                    prev, new
-                )
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
-    use trace::test::{INNER_RANGE1, INNER_RANGE2, SAMPLE_RANGE, TEST_SYMBOL, METRICS_ONE};
+    use trace::test::{INNER_RANGE1, INNER_RANGE2, METRICS_ONE, SAMPLE_RANGE, TEST_SYMBOL};
 
     #[test]
     fn complete_empty_frame() {
@@ -185,23 +166,23 @@ mod test {
     #[test]
     fn build_trace_nested() {
         let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
-        builder
-            .push_frame(INNER_RANGE1.start, TEST_SYMBOL.clone())
-            .unwrap();
+        builder.push_frame(INNER_RANGE1.start, TEST_SYMBOL.clone());
         let mut builder = extract_builder(builder.complete_frame(INNER_RANGE1.end).unwrap());
-        builder
-            .push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone())
-            .unwrap();
-        builder
-            .push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone())
-            .unwrap();
+        builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone());
+        builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone());
         let builder = extract_builder(builder.complete_frame(INNER_RANGE2.end).unwrap());
         let builder = extract_builder(builder.complete_frame(SAMPLE_RANGE.end).unwrap());
         match builder.complete_frame(SAMPLE_RANGE.end).unwrap() {
             BuilderResult::Completed(trace) => {
                 assert_eq!(trace.root.chunks.len(), 4);
-                assert!(matches!(&trace.root.chunks[0], trace::Chunk::Straightline(_)));
-                assert!(matches!(&trace.root.chunks[2], trace::Chunk::Straightline(_)));
+                assert!(matches!(
+                    &trace.root.chunks[0],
+                    trace::Chunk::Straightline(_)
+                ));
+                assert!(matches!(
+                    &trace.root.chunks[2],
+                    trace::Chunk::Straightline(_)
+                ));
 
                 match &trace.root.chunks[1] {
                     trace::Chunk::Frame(frame) => {
@@ -214,7 +195,10 @@ mod test {
 
                 match &trace.root.chunks[3] {
                     trace::Chunk::Frame(frame) => {
-                        assert_eq!(frame.metrics, MetricsRange::from(INNER_RANGE2.start, SAMPLE_RANGE.end));
+                        assert_eq!(
+                            frame.metrics,
+                            MetricsRange::from(INNER_RANGE2.start, SAMPLE_RANGE.end)
+                        );
                         assert_eq!(frame.chunks.len(), 2);
                         assert!(matches!(&frame.chunks[1], trace::Chunk::Straightline(_)));
 
@@ -222,7 +206,10 @@ mod test {
                             trace::Chunk::Frame(inner_frame) => {
                                 assert_eq!(inner_frame.metrics, INNER_RANGE2);
                                 assert_eq!(inner_frame.chunks.len(), 1);
-                                assert!(matches!(&inner_frame.chunks[0], trace::Chunk::Straightline(_)));
+                                assert!(matches!(
+                                    &inner_frame.chunks[0],
+                                    trace::Chunk::Straightline(_)
+                                ));
                             }
                             _ => panic!("Expected frame chunk in nested position 0"),
                         }
@@ -237,12 +224,8 @@ mod test {
     #[test]
     fn add_events() {
         let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
-        builder
-            .push_event(INNER_RANGE1.start, "Event 1".to_string())
-            .unwrap();
-        builder
-            .push_event(INNER_RANGE2.start, "Event 2".to_string())
-            .unwrap();
+        builder.push_event(INNER_RANGE1.start, "Event 1".to_string());
+        builder.push_event(INNER_RANGE2.start, "Event 2".to_string());
         let result = builder.complete_frame(SAMPLE_RANGE.end).unwrap();
         match result {
             BuilderResult::Completed(trace) => {
@@ -255,14 +238,57 @@ mod test {
     }
 
     #[test]
-    fn non_monotonic_fails() {
+    fn frame_symbol_order() {
+        let mut builder = TraceBuilder::new(
+            SAMPLE_RANGE.start,
+            SymbolInfo {
+                name: "top level".to_string(),
+                offset: 0,
+                size: 0,
+            },
+        );
+        builder.push_frame(
+            INNER_RANGE1.start,
+            SymbolInfo {
+                name: "2nd level".to_string(),
+                offset: 0,
+                size: 0,
+            },
+        );
+        builder.push_frame(INNER_RANGE1.start + METRICS_ONE, SymbolInfo {
+            name: "3rd level".to_string(),
+            offset: 0,
+            size: 0,
+        });
+        assert_eq!(builder.get_frame_symbol(0).name, "3rd level");
+        assert_eq!(builder.get_frame_symbol(1).name, "2nd level");
+        assert_eq!(builder.get_frame_symbol(2).name, "top level");
+    }
+
+    #[test]
+    #[should_panic]
+    fn non_monotonic_fails1() {
         let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
-        assert!(builder.push_frame(SAMPLE_RANGE.start - METRICS_ONE, TEST_SYMBOL.clone()).is_err());
+        builder.push_frame(SAMPLE_RANGE.start - METRICS_ONE, TEST_SYMBOL.clone());
+    }
 
-        builder.push_event(INNER_RANGE1.start, "Event 1".to_string()).unwrap();
-        assert!(builder.push_event(INNER_RANGE1.start - METRICS_ONE, "Event 2".to_string()).is_err());
+    #[test]
+    #[should_panic]
+    fn non_monotonic_fails2() {
+        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
+        builder.push_event(INNER_RANGE1.start, "Event 1".to_string());
+        builder.push_event(INNER_RANGE1.start - METRICS_ONE, "Event 2".to_string());
+    }
 
-        builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone()).unwrap();
-        assert!(builder.complete_frame(INNER_RANGE2.start - METRICS_ONE).is_err());
+    #[test]
+    #[should_panic]
+    fn non_monotonic_fails3() {
+        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
+        builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone());
+        assert!(
+            builder
+                .complete_frame(INNER_RANGE2.start - METRICS_ONE)
+                .is_ok()
+        );
     }
 }
