@@ -12,6 +12,8 @@ use tracing::{info, warn};
 
 use crate::perf;
 
+const ERROR_EVENT_ID: u32 = 1;
+
 static THREADPOOL: OnceLock<ThreadPool> = OnceLock::new();
 
 /// Creates a symbol for a frame whose symbol information isn't known.
@@ -72,7 +74,7 @@ fn export_trace(state: &mut State, tid: i32, trace: Trace) {
             )
         })
         .execute(move || {
-            info!("Starting to export: {}", path.display());
+            info!("Exporting {}...", path.display());
 
             let binary_encoded = trace
                 .bin_serialize(true)
@@ -131,9 +133,9 @@ fn process_return_event(state: &mut State, sample: &perf::perf_dlfilter_sample, 
                 info!(
                     "Completed trace for tid={}. Trace ran from {} to {} and had {} errors.",
                     sample.tid,
-                    trace.get_root_frame().metrics.start.ts,
-                    trace.get_root_frame().metrics.end.ts,
-                    trace.get_events().len()
+                    trace.root_frame().metrics.start.ts,
+                    trace.root_frame().metrics.end.ts,
+                    trace.get_event(ERROR_EVENT_ID).unwrap().occurences().len()
                 );
                 export_trace(state, sample.tid, trace);
             }
@@ -196,10 +198,7 @@ pub(crate) fn process_branch_event(
 
     if let Some(builder) = builder {
         if sample.ip == 0 {
-            builder.push_event(
-                cur_metrics,
-                "Trace decoder hit an error. Callstacks may be corrupted.".to_string(),
-            );
+            builder.event_occured(ERROR_EVENT_ID, cur_metrics);
         }
 
         let current_symbol = builder.get_frame_symbol(0);
@@ -236,12 +235,16 @@ pub(crate) fn process_branch_event(
         }
     } else if target_symbol.offset != 0 && state.sym_regex.is_match(&target_symbol.name) {
         info!(
-            "Starting new trace for tid for symbol: {}",
-            target_symbol.name
+            "Starting trace: tid={}, symbol={}",
+            sample.tid, target_symbol.name
         );
-        state
-            .builders
-            .insert(sample.tid, TraceBuilder::new(cur_metrics, target_symbol));
+        let mut new_builder = TraceBuilder::new(cur_metrics, target_symbol);
+        new_builder.new_event(
+            ERROR_EVENT_ID,
+            "Errors".to_string(),
+            "Trace decoder hit an error. Callstacks may be corrupted.".to_string(),
+        );
+        state.builders.insert(sample.tid, new_builder);
     }
 }
 

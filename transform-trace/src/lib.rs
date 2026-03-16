@@ -10,7 +10,7 @@ use tracing::{Level, error};
 use crate::transform::State;
 
 const USAGE: &str = "Usage: --dlarg <symbol regex> --dlarg <output_dir>";
-const SHORT_DESC: &core::ffi::CStr = c"Parses an Intel PT trace into our internal format for later aggregating, comparing, and exporting.";
+const SHORT_DESC: &core::ffi::CStr = c"Parses an Intel PT trace into pt-fuser format for later aggregating, comparing, and exporting.";
 const LONG_DESC: &core::ffi::CStr = c"Usage: --dlarg <symbol regex> --dlarg <output_dir>. \
     Only processes trace data for a function matching the given regex and all its sub-calls. \
     Each function invocation is a separate trace file written into the output directory as trace-<tid>-<n>.flex.gz";

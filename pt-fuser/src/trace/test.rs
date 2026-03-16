@@ -53,6 +53,26 @@ pub(crate) const METRICS_ONE: Metrics = Metrics {
     insn_count: 1,
 };
 
+/// Creates a trace with no events and a root frame that has five chunks:
+/// child frame, straightline, child frame, straightline, child frame
+fn test_trace() -> Trace {
+    let mut outer = Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone());
+    let middle = Frame::new(INNER_RANGE1, TEST_SYMBOL.clone());
+    outer.add_child(middle).unwrap();
+    let beginning = Frame::new(
+        MetricsRange::from(SAMPLE_RANGE.start, INNER_RANGE1.start - METRICS_ONE),
+        TEST_SYMBOL.clone(),
+    );
+    outer.add_child(beginning).unwrap();
+    let end = Frame::new(
+        MetricsRange::from(INNER_RANGE1.end + METRICS_ONE, SAMPLE_RANGE.end),
+        TEST_SYMBOL.clone(),
+    );
+    outer.add_child(end).unwrap();
+
+    Trace::new(outer, vec![])
+}
+
 #[test]
 fn range_totals() {
     let frame = Chunk::Frame(Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone()));
@@ -111,19 +131,8 @@ fn child_overlaps_parent() {
 
 #[test]
 fn child_overlapping_complex() {
-    let mut outer = Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone());
-    let middle = Frame::new(INNER_RANGE1, TEST_SYMBOL.clone());
-    outer.add_child(middle).unwrap();
-    let beginning = Frame::new(
-        MetricsRange::from(SAMPLE_RANGE.start, INNER_RANGE1.start - METRICS_ONE),
-        TEST_SYMBOL.clone(),
-    );
-    outer.add_child(beginning).unwrap();
-    let end = Frame::new(
-        MetricsRange::from(INNER_RANGE1.end + METRICS_ONE, SAMPLE_RANGE.end),
-        TEST_SYMBOL.clone(),
-    );
-    outer.add_child(end).unwrap();
+    let trace = test_trace();
+    let outer = trace.root_frame();
     assert_eq!(outer.chunks.len(), 5);
     assert!(outer.check_invariant());
     assert!(matches!(&outer.chunks[0], Chunk::Frame(_)));
@@ -172,38 +181,49 @@ fn add_child_no_space() {
 }
 
 #[test]
-fn sort_events() {
-    let events = vec![
-        Event {
-            metrics: Metrics {
-                ts: 150,
-                cycles: 100,
-                insn_count: 400,
-            },
-            description: "Event 1".to_string(),
-        },
-        Event {
-            metrics: Metrics {
-                ts: 120,
-                cycles: 70,
-                insn_count: 300,
-            },
-            description: "Event 2".to_string(),
-        },
-        Event {
-            metrics: Metrics {
-                ts: 160,
-                cycles: 200,
-                insn_count: 600,
-            },
-            description: "Event 3".to_string(),
-        },
-    ];
+fn event_sorts() {
+    let mut event = Event::new(10, "Test Event".to_string(), "Description".to_string());
+    event.add_occurence(SAMPLE_RANGE.start);
+    event.add_occurence(SAMPLE_RANGE.start - METRICS_ONE);
+    event.add_occurence(SAMPLE_RANGE.start + METRICS_ONE);
+    assert_eq!(event.occurences().len(), 3);
+    assert_eq!(event.occurences()[0], SAMPLE_RANGE.start - METRICS_ONE);
+    assert_eq!(event.occurences()[1], SAMPLE_RANGE.start);
+    assert_eq!(event.occurences()[2], SAMPLE_RANGE.start + METRICS_ONE);
+}
+
+#[test]
+fn find_event() {
     let frame = Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone());
-    let trace = Trace::new(frame, events);
-    assert!(
-        trace
-            .get_events()
-            .is_sorted_by(|e1, e2| e1.metrics.ts <= e2.metrics.ts)
+    let trace = Trace::new(
+        frame,
+        vec![
+            Event::new(20, "Another Event".to_string(), "Description".to_string()),
+            Event::new(10, "Test Event".to_string(), "Description".to_string()),
+        ],
     );
+    assert_eq!(trace.events.len(), 2);
+    assert!(trace.get_event(10).is_some());
+    assert!(trace.get_event(20).is_some());
+    assert!(trace.get_event(30).is_none());
+}
+
+#[test]
+fn serialize_round_trip_nogzip() {
+    let trace = test_trace();
+    let data = trace.bin_serialize(false).unwrap();
+    let deserialized = Trace::bin_deserialize(&data, false).unwrap();
+
+    assert_eq!(deserialized.root_frame().chunks.len(), 5);
+    assert!(deserialized.root_frame().check_invariant());
+}
+
+#[test]
+fn serialize_round_trip_gzip() {
+    let trace = test_trace();
+    let data = trace.bin_serialize(true).unwrap();
+    let deserialized = Trace::bin_deserialize(&data, true).unwrap();
+
+    assert_eq!(deserialized.root_frame().chunks.len(), 5);
+    assert!(deserialized.root_frame().check_invariant());
 }

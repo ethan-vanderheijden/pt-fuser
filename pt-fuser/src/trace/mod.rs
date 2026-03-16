@@ -211,6 +211,10 @@ impl Frame {
             && total_cycles == self.metrics.total_cycles()
             && total_insn == self.metrics.total_insn()
     }
+
+    pub fn chunks(&self) -> &[Chunk] {
+        &self.chunks
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -256,52 +260,54 @@ impl From<Frame> for Chunk {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Event {
-    metrics: Metrics,
-    description: String,
+    pub id: u32,
+    // INVARIANT: occurences must be sorted by timestamp
+    occurences: Vec<Metrics>,
+    pub name: String,
+    pub description: String,
 }
 
 impl Event {
-    pub fn new(metrics: Metrics, description: String) -> Self {
+    pub fn new(id: u32, name: String, description: String) -> Self {
         Self {
-            metrics,
+            id,
+            occurences: Vec::new(),
+            name,
             description,
         }
     }
-}
 
-impl PartialOrd for Event {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
+    pub fn add_occurence(&mut self, occurence: Metrics) {
+        let idx = self.occurences.partition_point(|&x| x.ts <= occurence.ts);
+        self.occurences.insert(idx, occurence);
     }
-}
-
-impl Ord for Event {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.metrics.cmp(&other.metrics)
+    
+    pub fn occurences(&self) -> &[Metrics] {
+        &self.occurences
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Trace {
     root: Frame,
-    event_timeline: Vec<Event>,
+    events: Vec<Event>,
 }
 
 impl Trace {
-    pub fn new(root: Frame, mut event_timeline: Vec<Event>) -> Self {
-        event_timeline.sort();
-        Self {
-            root,
-            event_timeline,
-        }
+    pub fn new(root: Frame, events: Vec<Event>) -> Self {
+        Self { root, events }
     }
 
-    pub fn get_root_frame(&self) -> &Frame {
+    pub fn root_frame(&self) -> &Frame {
         &self.root
     }
 
-    pub fn get_events(&self) -> &[Event] {
-        &self.event_timeline
+    pub fn events(&self) -> &[Event] {
+        &self.events
+    }
+
+    pub fn get_event(&self, id: u32) -> Option<&Event> {
+        self.events.iter().find(|event| event.id == id)
     }
 
     pub fn bin_serialize(&self, gzip: bool) -> Result<Vec<u8>, flexbuffers::SerializationError> {

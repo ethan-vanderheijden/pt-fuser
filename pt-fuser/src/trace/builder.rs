@@ -84,13 +84,16 @@ impl TraceBuilder {
         }
     }
 
-    pub fn push_event(&mut self, metrics: Metrics, description: String) {
-        self.ensure_monotonic(metrics);
-        self.events.push(Event {
-            metrics,
-            description,
-        });
-        self.last_metrics = metrics;
+    pub fn new_event(&mut self, id: u32, name: String, description: String) {
+        self.events.push(Event::new(id, name, description));
+    }
+
+    pub fn event_occured(&mut self, event_id: u32, metrics: Metrics) {
+        for event in self.events.iter_mut() {
+            if event.id == event_id {
+                event.add_occurence(metrics);
+            }
+        }
     }
 
     pub fn callstack_depth(&self) -> usize {
@@ -224,14 +227,26 @@ mod test {
     #[test]
     fn add_events() {
         let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
-        builder.push_event(INNER_RANGE1.start, "Event 1".to_string());
-        builder.push_event(INNER_RANGE2.start, "Event 2".to_string());
+        builder.new_event(10, "Event 1".to_string(), "Description 1".to_string());
+        builder.new_event(20, "Event 2".to_string(), "Description 2".to_string());
+
+        builder.event_occured(10, INNER_RANGE2.start);
+        builder.event_occured(20, INNER_RANGE1.end);
+        builder.event_occured(10, INNER_RANGE1.start);
+
         let result = builder.complete_frame(SAMPLE_RANGE.end).unwrap();
         match result {
             BuilderResult::Completed(trace) => {
-                assert_eq!(trace.get_events().len(), 2);
-                assert_eq!(trace.get_events()[0].metrics, INNER_RANGE1.start);
-                assert_eq!(trace.get_events()[1].metrics, INNER_RANGE2.start);
+                assert_eq!(trace.events.len(), 2);
+                if trace.events[0].id == 10 && trace.events[1].id == 20 {
+                    assert_eq!(trace.events[0].occurences().len(), 2);
+                    assert_eq!(trace.events[1].occurences().len(), 1);
+                } else if trace.events[0].id == 20 && trace.events[1].id == 10 {
+                    assert_eq!(trace.events[0].occurences().len(), 1);
+                    assert_eq!(trace.events[1].occurences().len(), 2);
+                } else {
+                    panic!("Unexpected event IDs");
+                }
             }
             BuilderResult::Builder(_) => panic!("Expected trace to be completed"),
         }
@@ -267,17 +282,9 @@ mod test {
 
     #[test]
     #[should_panic]
-    fn non_monotonic_fails1() {
+    fn non_monotonic_fails() {
         let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
         builder.push_frame(SAMPLE_RANGE.start - METRICS_ONE, TEST_SYMBOL.clone());
-    }
-
-    #[test]
-    #[should_panic]
-    fn non_monotonic_fails2() {
-        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
-        builder.push_event(INNER_RANGE1.start, "Event 1".to_string());
-        builder.push_event(INNER_RANGE1.start - METRICS_ONE, "Event 2".to_string());
     }
 
     #[test]
