@@ -1,0 +1,64 @@
+# PT-Fuser
+
+This is a tool for processing, merging, and comparing Intel-PT traces.
+
+Typical workflow is as follows:
+
+1. Collect an Intel-PT trace of your application using `perf`
+2. Convert the trace into `pt-fuser`'s internal format
+3. Optional processing: average multiple traces, compare traces against each other, etc. via `pt-fuser`
+4. Convert the `pt-fuser` trace to a [Perfetto](https://ui.perfetto.dev/) trace
+
+## Installation
+
+After cloning this repo, you can build the project with Rust:
+
+```bash
+cargo build --release
+```
+
+This project consists of three crates:
+
+- `transform-trace`: produces a shared object file that transforms the trace from `perf`'s format to `pt-fuser`'s internal format via `perf script`'s dlfilter feature.
+- `pt-fuser`: the main crate that provides the core functionality of merging, comparing, and exporting traces.
+- `perfetto-rust`: contains protobuf code for creating Perfetto trace files. It was generated from Perfetto's protobuf definitions.
+
+## Usage
+
+### Collecting an Intel-PT trace
+
+Use `perf` to collect the Intel-PT trace. For example:
+
+```bash
+perf record -e intel_pt/cyc=1,mtc_period=0,noretcomp=1/u -t <TID> -o <PERF_FILE>
+```
+
+The default configuration for Intel-PT is `intel_pt/cyc=0,mtc_period=3,noretcomp=0/u`, which has coarse grained timing information. MTC packets provide timing info every `2^mtc_period` times the Always Running Timer triggers, so smaller is finer grained. Enabling CYC accurate mode (`cyc=1`), updates the cycle count on every packet, which is very fine grained. Disabling return compression (`noretcomp=1`) produces a packet on every return instruction, which also increases granularity. However, increasing granularity comes at the cost of increasing the amount of data produced and may lead to trace decoding errors.
+
+For more information, consult the man page (`man perf-intel-pt`), and [this blog post](https://halobates.de/blog/p/432) is a good primer.
+
+### Converting the trace to `pt-fuser`'s internal format
+
+Convert the trace into `pt-fuser`'s internal format:
+
+```bash
+perf script -i <PERF_FILE> --itrace=bei0ns --dlfilter=./target/release/libtransform_trace.so --dlarg=<SYMBOL_REGEX> --dlarg=<OUTPUT_DIR> [--dlarg=<TRACE_LIMIT>]
+```
+
+SYMBOL_REGEX is a regular expression matching the function in your application that you are interested in. It will be the top-level frame in the resulting trace.
+
+OUTPUT_DIR is the directory where processed traces are written to. By default, it will process every occurrence of SYMBOL_REGEX as a new trace, so if X matching functions were executed, X traces are produced.
+
+TRACE_LIMIT is an optional, numeric argument that limits the number of traces produced.
+
+All resulting trace files are compressed with gzip.
+
+### Exporting the trace to Perfetto
+
+Convert a particular `pt-fuser` trace to a trace that can be viewed in https://ui.perfetto.dev/:
+
+```bash
+cargo run --bin convert_perfetto -- --gzip <INPUT_FILE> <OUTPUT_FILE>
+```
+
+`--gzip` will uncompress the input file before trying to read it.
