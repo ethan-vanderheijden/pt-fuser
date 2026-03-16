@@ -1,3 +1,3 @@
 [workspace]
 resolver = "3"
-members = ["perfetto_rust", "pt-fuser", "transform-trace"]
+members = ["perfetto-rust", "pt-fuser", "transform-trace"]
