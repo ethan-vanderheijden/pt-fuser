@@ -40,6 +40,7 @@ fn contained_in_callstack(builder: &TraceBuilder, addr: u64) -> Option<usize> {
 pub(crate) struct State {
     sym_regex: Regex,
     output_dir: String,
+    traces_limit: Option<u32>,
     trace_nums: HashMap<i32, u32>,
     builders: HashMap<i32, TraceBuilder>,
     insn_cnt: u64,
@@ -47,10 +48,11 @@ pub(crate) struct State {
 }
 
 impl State {
-    pub(crate) fn new(sym_regex: Regex, output_dir: String) -> Self {
+    pub(crate) fn new(sym_regex: Regex, output_dir: String, traces_limit: Option<u32>) -> Self {
         Self {
             sym_regex,
             output_dir,
+            traces_limit,
             trace_nums: HashMap::new(),
             builders: HashMap::new(),
             insn_cnt: 0,
@@ -233,11 +235,15 @@ pub(crate) fn process_branch_event(
                 process_return_event(state, sample, returning_levels);
             }
         }
-    } else if target_symbol.offset != 0 && state.sym_regex.is_match(&target_symbol.name) {
+    } else if target_symbol.offset != 0
+        && state.sym_regex.is_match(&target_symbol.name)
+        && (state.traces_limit.is_none() || state.traces_limit.unwrap() > 0)
+    {
         info!(
             "Starting trace: tid={}, symbol={}",
             sample.tid, target_symbol.name
         );
+        state.traces_limit = state.traces_limit.map(|limit| limit - 1);
         let mut new_builder = TraceBuilder::new(cur_metrics, target_symbol);
         new_builder.new_event(
             ERROR_EVENT_ID,

@@ -9,9 +9,10 @@ use tracing::{Level, error};
 
 use crate::transform::State;
 
-const USAGE: &str = "Usage: --dlarg <symbol regex> --dlarg <output_dir>";
+const USAGE: &str =
+    "Usage: --dlarg <symbol regex> --dlarg <output_dir> [--dlarg <max # of traces>]";
 const SHORT_DESC: &core::ffi::CStr = c"Parses an Intel PT trace into pt-fuser format for later aggregating, comparing, and exporting.";
-const LONG_DESC: &core::ffi::CStr = c"Usage: --dlarg <symbol regex> --dlarg <output_dir>. \
+const LONG_DESC: &core::ffi::CStr = c"Usage: --dlarg <symbol regex> --dlarg <output_dir> [--dlarg <max # of traces>]. \
     Only processes trace data for a function matching the given regex and all its sub-calls. \
     Each function invocation is a separate trace file written into the output directory as trace-<tid>-<n>.flex.gz";
 
@@ -103,8 +104,8 @@ pub unsafe extern "C" fn start(raw_state: &mut *mut c_void, ctx: *mut c_void) ->
         args = std::slice::from_raw_parts(argv, argc as usize);
     }
 
-    if argc != 2 {
-        error!("Expected two arguments. {}", USAGE);
+    if argc != 2 && argc != 3 {
+        error!("Expected two or three arguments. {}", USAGE);
         return -1;
     }
 
@@ -114,9 +115,22 @@ pub unsafe extern "C" fn start(raw_state: &mut *mut c_void, ctx: *mut c_void) ->
     let arg1_string = String::from_utf8(arg1.to_vec()).expect("Invalid UTF-8 in first arg");
     let arg2_string = String::from_utf8(arg2.to_vec()).expect("Invalid UTF-8 in second arg");
 
+    let max_traces = if argc == 3 {
+        let arg3 = unsafe { std::ffi::CStr::from_ptr(args[2]).to_bytes() };
+        Some(
+            String::from_utf8(arg3.to_vec())
+                .expect("Invalid UTF-8 in third arg")
+                .parse::<u32>()
+                .expect("Third argument must be a number"),
+        )
+    } else {
+        None
+    };
+
     let state = Box::new(State::new(
         Regex::new(&arg1_string).expect("Provided regex is invalid"),
         arg2_string,
+        max_traces,
     ));
     *raw_state = Box::into_raw(state) as *mut c_void;
     0
