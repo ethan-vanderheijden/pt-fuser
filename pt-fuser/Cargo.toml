@@ -11,3 +11,4 @@ perfetto-rust = { path = "../perfetto-rust" }
 prost = "0.14.3"
 prost-types = "0.14.3"
 serde = { version = "1.0.228", features = ["derive"] }
+tracing = "0.1.44"

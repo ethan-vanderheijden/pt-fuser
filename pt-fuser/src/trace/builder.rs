@@ -270,11 +270,14 @@ mod test {
                 size: 0,
             },
         );
-        builder.push_frame(INNER_RANGE1.start + METRICS_ONE, SymbolInfo {
-            name: "3rd level".to_string(),
-            offset: 0,
-            size: 0,
-        });
+        builder.push_frame(
+            INNER_RANGE1.start + METRICS_ONE,
+            SymbolInfo {
+                name: "3rd level".to_string(),
+                offset: 0,
+                size: 0,
+            },
+        );
         assert_eq!(builder.get_frame_symbol(0).name, "3rd level");
         assert_eq!(builder.get_frame_symbol(1).name, "2nd level");
         assert_eq!(builder.get_frame_symbol(2).name, "top level");

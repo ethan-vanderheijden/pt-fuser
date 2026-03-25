@@ -3,8 +3,9 @@ use std::{
 };
 
 use pt_fuser::trace::{
-    Metrics, SymbolInfo, Trace,
+    SymbolInfo, Trace,
     builder::{BuilderResult, TraceBuilder},
+    metrics::Metrics,
 };
 use regex::Regex;
 use threadpool::ThreadPool;

@@ -1,120 +1,16 @@
 pub mod builder;
+pub mod metrics;
+
 #[cfg(test)]
 mod test;
 
-use std::{
-    fmt::Display,
-    io::Read,
-    ops::{Add, AddAssign, Sub, SubAssign},
-};
+use std::{fmt::Display, io::Read};
 
 use flate2::Compression;
 use flexbuffers::FlexbufferSerializer;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Metrics {
-    pub ts: u64,
-    pub cycles: u64,
-    pub insn_count: u64,
-}
-
-impl Add for Metrics {
-    type Output = Metrics;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Metrics {
-            ts: self.ts + rhs.ts,
-            cycles: self.cycles + rhs.cycles,
-            insn_count: self.insn_count + rhs.insn_count,
-        }
-    }
-}
-
-impl AddAssign for Metrics {
-    fn add_assign(&mut self, rhs: Self) {
-        self.ts += rhs.ts;
-        self.cycles += rhs.cycles;
-        self.insn_count += rhs.insn_count;
-    }
-}
-
-impl Sub for Metrics {
-    type Output = Metrics;
-
-    fn sub(self, rhs: Self) -> Self::Output {
-        Metrics {
-            ts: self.ts - rhs.ts,
-            cycles: self.cycles - rhs.cycles,
-            insn_count: self.insn_count - rhs.insn_count,
-        }
-    }
-}
-
-impl SubAssign for Metrics {
-    fn sub_assign(&mut self, rhs: Self) {
-        self.ts -= rhs.ts;
-        self.cycles -= rhs.cycles;
-        self.insn_count -= rhs.insn_count;
-    }
-}
-
-impl PartialOrd for Metrics {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Metrics {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.ts.cmp(&other.ts)
-    }
-}
-
-impl Display for Metrics {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "(ts: {}, cycles: {}, insn_count: {})",
-            self.ts, self.cycles, self.insn_count
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct MetricsRange {
-    // start is inclusive and end is exclusive
-    pub start: Metrics,
-    pub end: Metrics,
-}
-
-impl MetricsRange {
-    pub fn total_time(&self) -> u64 {
-        self.end.ts - self.start.ts
-    }
-
-    pub fn total_cycles(&self) -> u64 {
-        self.end.cycles - self.start.cycles
-    }
-
-    pub fn total_insn(&self) -> u64 {
-        self.end.insn_count - self.start.insn_count
-    }
-
-    pub fn from(start: Metrics, end: Metrics) -> Self {
-        Self { start, end }
-    }
-
-    pub fn includes_range(&self, other: &MetricsRange) -> bool {
-        self.start.ts <= other.start.ts && other.end.ts <= self.end.ts
-    }
-}
-
-impl Display for MetricsRange {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MetricsRange {{ {} - {} }}", self.start, self.end)
-    }
-}
+use crate::trace::metrics::{Metrics, MetricsRange};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SymbolInfo {
@@ -277,17 +173,34 @@ impl Event {
         }
     }
 
+    pub fn from_occurences(
+        id: u32,
+        name: String,
+        description: String,
+        occurences: Vec<Metrics>,
+    ) -> Result<Self, Error> {
+        if !occurences.is_sorted() {
+            return Err(Error::NotSorted);
+        }
+        Ok(Self {
+            id,
+            occurences,
+            name,
+            description,
+        })
+    }
+
     pub fn add_occurence(&mut self, occurence: Metrics) {
-        let idx = self.occurences.partition_point(|&x| x.ts <= occurence.ts);
+        let idx = self.occurences.partition_point(|&x| x <= occurence);
         self.occurences.insert(idx, occurence);
     }
-    
+
     pub fn occurences(&self) -> &[Metrics] {
         &self.occurences
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Trace {
     root: Frame,
     events: Vec<Event>,
@@ -343,12 +256,14 @@ impl Trace {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Error {
     InvalidRange(MetricsRange),
+    NotSorted,
 }
 
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::InvalidRange(range) => write!(f, "Invalid range: {}", range),
+            Error::NotSorted => write!(f, "Occurences are not sorted by timestamp"),
         }
     }
 }

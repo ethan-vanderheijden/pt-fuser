@@ -489,6 +489,7 @@ dependencies = [
  "prost",
  "prost-types",
  "serde",
+ "tracing",
 ]
 
 [[package]]
