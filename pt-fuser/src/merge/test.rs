@@ -287,7 +287,12 @@ fn merge_frame_no_children() {
     let frame1 = produce_frame_metrics((500, 590), &[]);
     let frame2 = produce_frame_metrics((300, 380), &[]);
     let frame3 = produce_frame_metrics((400, 464), &[]);
-    let merged = merge::merge_frames(&[&frame1, &frame2, &frame3], Metrics::constant(50), 0.7);
+    let merged = merge::merge_frames(
+        &[&frame1, &frame2, &frame3],
+        Metrics::constant(50),
+        &mut Vec::new(),
+        0.7,
+    );
     assert_eq!(merged.metrics.start, Metrics::constant(50));
     assert_eq!(
         merged.metrics.end,
@@ -300,7 +305,12 @@ fn merge_frame_common_children() {
     let frame1 = produce_frame_metrics((500, 590), &[(520, 540, None), (550, 558, None)]);
     let frame2 = produce_frame_metrics((300, 380), &[(310, 335, None), (340, 352, None)]);
     let frame3 = produce_frame_metrics((400, 464), &[(415, 430, None), (445, 458, None)]);
-    let merged = merge::merge_frames(&[&frame1, &frame2, &frame3], Metrics::constant(50), 0.7);
+    let merged = merge::merge_frames(
+        &[&frame1, &frame2, &frame3],
+        Metrics::constant(50),
+        &mut Vec::new(),
+        0.7,
+    );
     assert_eq!(merged.metrics.start, Metrics::constant(50));
     assert_eq!(
         merged.metrics.end,
@@ -344,17 +354,34 @@ fn merge_frame_frequent_children() {
     };
     let frame1 = produce_frame_metrics(
         (500, 590),
-        &[(540, 541, Some(&common)), (510, 518, Some(&a)), (560, 570, Some(&c))],
+        &[
+            (540, 541, Some(&common)),
+            (510, 518, Some(&a)),
+            (560, 570, Some(&c)),
+        ],
     );
     let frame2 = produce_frame_metrics(
         (300, 380),
-        &[(340, 341, Some(&common)), (314, 324, Some(&a)), (354, 364, Some(&b))],
+        &[
+            (340, 341, Some(&common)),
+            (314, 324, Some(&a)),
+            (354, 364, Some(&b)),
+        ],
     );
     let frame3 = produce_frame_metrics(
         (400, 464),
-        &[(440, 441, Some(&common)), (450, 456, Some(&b)), (400, 410, Some(&c))],
+        &[
+            (440, 441, Some(&common)),
+            (450, 456, Some(&b)),
+            (400, 410, Some(&c)),
+        ],
     );
-    let merged = merge::merge_frames(&[&frame1, &frame2, &frame3], Metrics::constant(50), 0.6);
+    let merged = merge::merge_frames(
+        &[&frame1, &frame2, &frame3],
+        Metrics::constant(50),
+        &mut Vec::new(),
+        0.6,
+    );
     assert_eq!(merged.metrics.start, Metrics::constant(50));
     assert_eq!(
         merged.metrics.end,
@@ -365,7 +392,11 @@ fn merge_frame_frequent_children() {
     let child2 = &merged.chunks()[3];
     let child3 = &merged.chunks()[5];
     match (child1, child2, child3) {
-        (merge::Chunk::Frame(child_frame1), merge::Chunk::Frame(child_frame2), merge::Chunk::Frame(child_frame3)) => {
+        (
+            merge::Chunk::Frame(child_frame1),
+            merge::Chunk::Frame(child_frame2),
+            merge::Chunk::Frame(child_frame3),
+        ) => {
             assert_eq!(child_frame1.metrics.start, Metrics::constant(50 + 12));
             assert_eq!(child_frame1.metrics.end, Metrics::constant(50 + 12 + 9));
             assert_eq!(child_frame1.symbol, a);
@@ -450,7 +481,7 @@ fn merge_events_scaling() {
     );
     let merged_events = merge::merge_events(
         &[&trace1, &trace2],
-        MetricsRange::new(Metrics::constant(50), Metrics::constant(100)),
+        MetricsRange::new(Metrics::constant(20), Metrics::constant(100)),
     );
 
     assert_eq!(merged_events.len(), 2);
@@ -465,11 +496,11 @@ fn merge_events_scaling() {
         .expect("Merged event B not found");
     assert_eq!(
         merged_event_a.occurences(),
-        &[Metrics::constant(60), Metrics::constant(65)]
+        &[Metrics::constant(36), Metrics::constant(44)]
     );
     assert_eq!(
         merged_event_b.occurences(),
-        &[Metrics::constant(75), Metrics::constant(90)]
+        &[Metrics::constant(60), Metrics::constant(84)]
     );
 }
 
@@ -498,7 +529,7 @@ fn merge_events_zipped_scaled() {
     );
     let merged_events = merge::merge_events(
         &[&trace1, &trace2],
-        MetricsRange::new(Metrics::constant(50), Metrics::constant(100)),
+        MetricsRange::new(Metrics::constant(20), Metrics::constant(100)),
     );
     assert_eq!(merged_events.len(), 1);
 
@@ -509,10 +540,10 @@ fn merge_events_zipped_scaled() {
     assert_eq!(
         merged_event_a.occurences(),
         &[
-            Metrics::constant(60),
-            Metrics::constant(70),
-            Metrics::constant(80),
-            Metrics::constant(90)
+            Metrics::constant(36),
+            Metrics::constant(52),
+            Metrics::constant(68),
+            Metrics::constant(84)
         ]
     );
 }
