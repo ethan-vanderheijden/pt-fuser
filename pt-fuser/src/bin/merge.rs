@@ -1,10 +1,11 @@
+use std::process::ExitCode;
+
 use clap::Parser;
 use pt_fuser::{merge, trace::Trace};
 
 #[derive(Parser)]
 #[command(about = "Combines multiple pt-fuser traces into a single \"averaged\" trace")]
 struct Cli {
-    input: Vec<String>,
     #[clap(
         long,
         default_value_t = false,
@@ -12,10 +13,16 @@ struct Cli {
     )]
     gzip: bool,
     output: String,
+    input: Vec<String>,
 }
 
-fn main() {
+fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    if cli.input.len() < 2 {
+        eprintln!("At least two input trace files are required for merging");
+        return ExitCode::FAILURE;
+    }
 
     let mut traces = Vec::new();
     for input in cli.input {
@@ -31,4 +38,6 @@ fn main() {
         .bin_serialize(true)
         .expect("Failed to serialize merge trace");
     std::fs::write(cli.output, result_data).expect("Failed to write merged trace to file");
+
+    ExitCode::SUCCESS
 }

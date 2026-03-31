@@ -10,7 +10,7 @@ struct IncompleteFrame {
 impl IncompleteFrame {
     fn complete(self, end_metrics: Metrics) -> Result<Frame, trace::Error> {
         let mut completed = Frame::new(
-            MetricsRange::from(self.start_metrics, end_metrics),
+            MetricsRange::new(self.start_metrics, end_metrics),
             self.symbol,
         );
         for child in self.child_frames.into_iter().rev() {
@@ -200,7 +200,7 @@ mod test {
                     trace::Chunk::Frame(frame) => {
                         assert_eq!(
                             frame.metrics,
-                            MetricsRange::from(INNER_RANGE2.start, SAMPLE_RANGE.end)
+                            MetricsRange::new(INNER_RANGE2.start, SAMPLE_RANGE.end)
                         );
                         assert_eq!(frame.chunks.len(), 2);
                         assert!(matches!(&frame.chunks[1], trace::Chunk::Straightline(_)));

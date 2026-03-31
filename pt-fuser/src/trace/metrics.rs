@@ -1,5 +1,6 @@
 use std::{
     fmt::Display,
+    iter::Sum,
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
@@ -210,6 +211,12 @@ impl Ord for Metrics {
     }
 }
 
+impl Sum for Metrics {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Metrics::constant(0), |acc, x| acc + x)
+    }
+}
+
 impl Display for Metrics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -242,10 +249,6 @@ impl MetricsRange {
 
     pub fn total_insn(&self) -> u64 {
         self.end.insn_count - self.start.insn_count
-    }
-
-    pub fn from(start: Metrics, end: Metrics) -> Self {
-        Self { start, end }
     }
 
     pub fn includes_range(&self, other: &MetricsRange) -> bool {

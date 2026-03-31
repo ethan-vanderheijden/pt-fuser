@@ -13,7 +13,7 @@ use crate::trace::{
     metrics::{Metrics, MetricsRange},
 };
 
-const COMMON_FRAME_THRESH: f32 = 0.7;
+const FREQUENT_FRAME_THRESH: f32 = 0.7;
 
 /// # Merging Algorithm
 ///
@@ -76,7 +76,7 @@ pub fn merge_traces(traces: &[&Trace]) -> Trace {
         .map(|t| t.root_frame())
         .collect::<Vec<&Frame>>();
 
-    let merged_frame = merge_frames(&frames, Metrics::constant(0));
+    let merged_frame = merge_frames(&frames, Metrics::constant(0), FREQUENT_FRAME_THRESH);
     let merged_events = merge_events(traces, merged_frame.metrics);
 
     let result = Trace::new(merged_frame, merged_events);
@@ -277,20 +277,6 @@ fn find_frequent_frames<I: Id>(n: u32, sequences: &[&[I]], thresh: f32) -> Vec<u
     result
 }
 
-fn average_metrics(metrics: impl IntoIterator<Item = Metrics>) -> Metrics {
-    let mut total = Metrics::constant(0);
-    let mut count = 0;
-    for m in metrics {
-        total += m;
-        count += 1;
-    }
-    Metrics::new(
-        total.ts / count as u64,
-        total.cycles / count as u64,
-        total.insn_count / count as u64,
-    )
-}
-
 fn add_within_bounds(
     frame: &mut Frame,
     mut child: Frame,
@@ -318,11 +304,15 @@ fn add_within_bounds(
     }
 }
 
-fn merge_frames(frames: &[&Frame], new_start: Metrics) -> Frame {
-    let avg_len = average_metrics(frames.iter().map(|f| &f.metrics.end - &f.metrics.start));
+fn merge_frames(frames: &[&Frame], new_start: Metrics, frequent_thresh: f32) -> Frame {
+    let avg_len = frames
+        .iter()
+        .map(|f| &f.metrics.end - &f.metrics.start)
+        .sum::<Metrics>()
+        / (frames.len() as u64);
     let new_end = new_start + avg_len;
     let mut merged_parent = Frame::new(
-        MetricsRange::from(new_start, new_end),
+        MetricsRange::new(new_start, new_end),
         frames[0].symbol.clone(),
     );
     let mut min_metrics = merged_parent.metrics.start;
@@ -336,13 +326,11 @@ fn merge_frames(frames: &[&Frame], new_start: Metrics) -> Frame {
 
     let lcs = find_lcs(n, &sequences);
 
-    let mut common_frames = Vec::with_capacity(sequences.len());
-    let mut subsequences = Vec::with_capacity(sequences.len());
     for id in lcs {
-        common_frames.clear();
-        subsequences.clear();
-
+        let mut common_frames = Vec::with_capacity(sequences.len());
         let mut common_offset_sum = Metrics::constant(0);
+        let mut subsequences = Vec::with_capacity(sequences.len());
+
         for sequence in sequences.iter_mut() {
             for i in 0..sequence.len() {
                 let item = &sequence[i];
@@ -357,7 +345,7 @@ fn merge_frames(frames: &[&Frame], new_start: Metrics) -> Frame {
         }
         // INVARIANT: subsequences.len() == sequences.len()
 
-        let freq_frame_ids = find_frequent_frames(n, &subsequences, COMMON_FRAME_THRESH);
+        let freq_frame_ids = find_frequent_frames(n, &subsequences, frequent_thresh);
         let mut freq_frames = Vec::new();
         let mut freq_offset_sum = Metrics::constant(0);
         for freq_id in freq_frame_ids {
@@ -374,7 +362,8 @@ fn merge_frames(frames: &[&Frame], new_start: Metrics) -> Frame {
             }
 
             let avg_freq_offset = freq_offset_sum / (freq_frames.len() as u64);
-            let merged_freq_frame = merge_frames(&freq_frames, new_start + avg_freq_offset);
+            let merged_freq_frame =
+                merge_frames(&freq_frames, new_start + avg_freq_offset, frequent_thresh);
             add_within_bounds(
                 &mut merged_parent,
                 merged_freq_frame,
@@ -384,7 +373,11 @@ fn merge_frames(frames: &[&Frame], new_start: Metrics) -> Frame {
         }
 
         let avg_common_offset = common_offset_sum / (common_frames.len() as u64);
-        let merged_common_frame = merge_frames(&common_frames, new_start + avg_common_offset);
+        let merged_common_frame = merge_frames(
+            &common_frames,
+            new_start + avg_common_offset,
+            frequent_thresh,
+        );
         add_within_bounds(
             &mut merged_parent,
             merged_common_frame,
@@ -393,7 +386,7 @@ fn merge_frames(frames: &[&Frame], new_start: Metrics) -> Frame {
         );
     }
 
-    let freq_frames_ids = find_frequent_frames(n, &sequences, COMMON_FRAME_THRESH);
+    let freq_frames_ids = find_frequent_frames(n, &sequences, frequent_thresh);
     let mut freq_frames = Vec::new();
     let mut freq_offset_sum = Metrics::constant(0);
     for freq_id in freq_frames_ids {
@@ -410,7 +403,8 @@ fn merge_frames(frames: &[&Frame], new_start: Metrics) -> Frame {
         }
 
         let avg_freq_offset = freq_offset_sum / (freq_frames.len() as u64);
-        let merged_freq_frame = merge_frames(&freq_frames, new_start + avg_freq_offset);
+        let merged_freq_frame =
+            merge_frames(&freq_frames, new_start + avg_freq_offset, frequent_thresh);
         add_within_bounds(
             &mut merged_parent,
             merged_freq_frame,
@@ -477,8 +471,10 @@ fn merge_events(traces: &[&Trace], new_range: MetricsRange) -> Vec<Event> {
                             if e.id == event.id {
                                 let trace_start = trace.root_frame().metrics.start;
                                 let trace_range = trace.root_frame().metrics.end - trace_start;
+                                // scale each occurence so it is within new_range
                                 Some(e.occurences().iter().map(move |o| {
-                                    new_range.start * (o - &trace_start) / trace_range + new_range.start
+                                    new_range.start * (o - &trace_start) / trace_range
+                                        + new_range.start
                                 }))
                             } else {
                                 None

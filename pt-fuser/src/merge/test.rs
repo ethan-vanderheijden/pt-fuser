@@ -61,6 +61,25 @@ fn produce_frame(symbols: &[&str]) -> Frame {
     frame
 }
 
+fn produce_frame_metrics(root: (u64, u64), children: &[(u64, u64, Option<&SymbolInfo>)]) -> Frame {
+    let mut frame = Frame::new(
+        MetricsRange::new(Metrics::constant(root.0), Metrics::constant(root.1)),
+        DUMMY_SYMBOL.clone(),
+    );
+    for &(start, end, symbol) in children {
+        frame
+            .add_child(Frame::new(
+                MetricsRange::new(Metrics::constant(start), Metrics::constant(end)),
+                symbol.unwrap_or(&DUMMY_SYMBOL).clone(),
+            ))
+            .expect(&format!(
+                "Failed to add child with range ({}, {}) to frame",
+                start, end
+            ));
+    }
+    frame
+}
+
 fn extract_ids(frames: &Vec<FrameIndexed>) -> Vec<u32> {
     frames.iter().map(|f| f.id).collect()
 }
@@ -261,6 +280,104 @@ fn common_slicing_heuristic() {
     let result2 = merge::find_frequent_frames(22, &seqs2, 0.7);
     assert_eq!(result1, answer);
     assert_eq!(result2, answer);
+}
+
+#[test]
+fn merge_frame_no_children() {
+    let frame1 = produce_frame_metrics((500, 590), &[]);
+    let frame2 = produce_frame_metrics((300, 380), &[]);
+    let frame3 = produce_frame_metrics((400, 464), &[]);
+    let merged = merge::merge_frames(&[&frame1, &frame2, &frame3], Metrics::constant(50), 0.7);
+    assert_eq!(merged.metrics.start, Metrics::constant(50));
+    assert_eq!(
+        merged.metrics.end,
+        Metrics::constant(50 + (90 + 80 + 64) / 3)
+    );
+}
+
+#[test]
+fn merge_frame_common_children() {
+    let frame1 = produce_frame_metrics((500, 590), &[(520, 540, None), (550, 558, None)]);
+    let frame2 = produce_frame_metrics((300, 380), &[(310, 335, None), (340, 352, None)]);
+    let frame3 = produce_frame_metrics((400, 464), &[(415, 430, None), (445, 458, None)]);
+    let merged = merge::merge_frames(&[&frame1, &frame2, &frame3], Metrics::constant(50), 0.7);
+    assert_eq!(merged.metrics.start, Metrics::constant(50));
+    assert_eq!(
+        merged.metrics.end,
+        Metrics::constant(50 + (90 + 80 + 64) / 3)
+    );
+    assert_eq!(merged.chunks().len(), 5);
+    let child1 = &merged.chunks()[1];
+    let child2 = &merged.chunks()[3];
+    match (child1, child2) {
+        (merge::Chunk::Frame(child_frame1), merge::Chunk::Frame(child_frame2)) => {
+            assert_eq!(child_frame1.metrics.start, Metrics::constant(50 + 15));
+            assert_eq!(child_frame1.metrics.end, Metrics::constant(50 + 15 + 20));
+            assert_eq!(child_frame2.metrics.start, Metrics::constant(50 + 45));
+            assert_eq!(child_frame2.metrics.end, Metrics::constant(50 + 45 + 11));
+        }
+        _ => panic!("Expected children to be framesi"),
+    }
+}
+
+#[test]
+fn merge_frame_frequent_children() {
+    let common = SymbolInfo {
+        name: "common".to_string(),
+        offset: 1,
+        size: 1,
+    };
+    let a = SymbolInfo {
+        name: "a".to_string(),
+        offset: 1,
+        size: 1,
+    };
+    let b = SymbolInfo {
+        name: "b".to_string(),
+        offset: 1,
+        size: 1,
+    };
+    let c = SymbolInfo {
+        name: "c".to_string(),
+        offset: 1,
+        size: 1,
+    };
+    let frame1 = produce_frame_metrics(
+        (500, 590),
+        &[(540, 541, Some(&common)), (510, 518, Some(&a)), (560, 570, Some(&c))],
+    );
+    let frame2 = produce_frame_metrics(
+        (300, 380),
+        &[(340, 341, Some(&common)), (314, 324, Some(&a)), (354, 364, Some(&b))],
+    );
+    let frame3 = produce_frame_metrics(
+        (400, 464),
+        &[(440, 441, Some(&common)), (450, 456, Some(&b)), (400, 410, Some(&c))],
+    );
+    let merged = merge::merge_frames(&[&frame1, &frame2, &frame3], Metrics::constant(50), 0.6);
+    assert_eq!(merged.metrics.start, Metrics::constant(50));
+    assert_eq!(
+        merged.metrics.end,
+        Metrics::constant(50 + (90 + 80 + 64) / 3)
+    );
+    assert_eq!(merged.chunks().len(), 7);
+    let child1 = &merged.chunks()[1];
+    let child2 = &merged.chunks()[3];
+    let child3 = &merged.chunks()[5];
+    match (child1, child2, child3) {
+        (merge::Chunk::Frame(child_frame1), merge::Chunk::Frame(child_frame2), merge::Chunk::Frame(child_frame3)) => {
+            assert_eq!(child_frame1.metrics.start, Metrics::constant(50 + 12));
+            assert_eq!(child_frame1.metrics.end, Metrics::constant(50 + 12 + 9));
+            assert_eq!(child_frame1.symbol, a);
+            assert_eq!(child_frame2.metrics.start, Metrics::constant(50 + 40));
+            assert_eq!(child_frame2.metrics.end, Metrics::constant(50 + 40 + 1));
+            assert_eq!(child_frame2.symbol, common);
+            assert_eq!(child_frame3.metrics.start, Metrics::constant(50 + 52));
+            assert_eq!(child_frame3.metrics.end, Metrics::constant(50 + 52 + 8));
+            assert_eq!(child_frame3.symbol, b);
+        }
+        _ => panic!("Expected children to be framesi"),
+    }
 }
 
 #[test]

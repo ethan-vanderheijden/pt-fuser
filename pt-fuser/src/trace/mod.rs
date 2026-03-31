@@ -67,7 +67,7 @@ impl Frame {
                     if straightline.metrics.includes_range(&child.metrics) {
                         if child.metrics.start.ts > straightline.metrics.start.ts {
                             let before = Straightline {
-                                metrics: MetricsRange::from(
+                                metrics: MetricsRange::new(
                                     straightline.metrics.start,
                                     child.metrics.start,
                                 ),
@@ -77,7 +77,7 @@ impl Frame {
                         }
                         if child.metrics.end.ts < straightline.metrics.end.ts {
                             let after = Straightline {
-                                metrics: MetricsRange::from(
+                                metrics: MetricsRange::new(
                                     child.metrics.end,
                                     straightline.metrics.end,
                                 ),

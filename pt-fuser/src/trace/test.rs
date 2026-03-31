@@ -60,12 +60,12 @@ fn test_trace() -> Trace {
     let middle = Frame::new(INNER_RANGE1, TEST_SYMBOL.clone());
     outer.add_child(middle).unwrap();
     let beginning = Frame::new(
-        MetricsRange::from(SAMPLE_RANGE.start, INNER_RANGE1.start - METRICS_ONE),
+        MetricsRange::new(SAMPLE_RANGE.start, INNER_RANGE1.start - METRICS_ONE),
         TEST_SYMBOL.clone(),
     );
     outer.add_child(beginning).unwrap();
     let end = Frame::new(
-        MetricsRange::from(INNER_RANGE1.end + METRICS_ONE, SAMPLE_RANGE.end),
+        MetricsRange::new(INNER_RANGE1.end + METRICS_ONE, SAMPLE_RANGE.end),
         TEST_SYMBOL.clone(),
     );
     outer.add_child(end).unwrap();
@@ -86,7 +86,7 @@ fn range_totals() {
 
 #[test]
 fn zero_duration_frame() {
-    let frame = MetricsRange::from(SAMPLE_RANGE.start, SAMPLE_RANGE.start);
+    let frame = MetricsRange::new(SAMPLE_RANGE.start, SAMPLE_RANGE.start);
     assert_eq!(frame.total_time(), 0);
     assert_eq!(frame.total_cycles(), 0);
     assert_eq!(frame.total_insn(), 0);
@@ -146,11 +146,11 @@ fn child_overlapping_complex() {
 fn add_invalid_child() {
     let mut frame = Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone());
     let too_early = Frame::new(
-        MetricsRange::from(SAMPLE_RANGE.start - METRICS_ONE, INNER_RANGE1.end),
+        MetricsRange::new(SAMPLE_RANGE.start - METRICS_ONE, INNER_RANGE1.end),
         TEST_SYMBOL.clone(),
     );
     let too_late = Frame::new(
-        MetricsRange::from(INNER_RANGE2.start, SAMPLE_RANGE.end + METRICS_ONE),
+        MetricsRange::new(INNER_RANGE2.start, SAMPLE_RANGE.end + METRICS_ONE),
         TEST_SYMBOL.clone(),
     );
     assert!(frame.add_child(too_early).is_err());
@@ -163,14 +163,14 @@ fn add_child_no_space() {
     let middle = Frame::new(INNER_RANGE1, TEST_SYMBOL.clone());
     outer.add_child(middle).unwrap();
     let beginning = Frame::new(
-        MetricsRange::from(
+        MetricsRange::new(
             SAMPLE_RANGE.start + METRICS_ONE,
             INNER_RANGE1.start + METRICS_ONE,
         ),
         TEST_SYMBOL.clone(),
     );
     let end = Frame::new(
-        MetricsRange::from(
+        MetricsRange::new(
             INNER_RANGE1.end - METRICS_ONE,
             SAMPLE_RANGE.end - METRICS_ONE,
         ),
