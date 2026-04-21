@@ -181,6 +181,131 @@ fn add_child_no_space() {
 }
 
 #[test]
+fn add_child_instant() {
+    let mut outer = Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone());
+    let child = Frame::new(
+        MetricsRange::new(
+            SAMPLE_RANGE.start + METRICS_ONE,
+            SAMPLE_RANGE.start + METRICS_ONE,
+        ),
+        TEST_SYMBOL.clone(),
+    );
+    assert!(outer.add_child(child).is_ok());
+}
+
+#[test]
+fn add_child_nested_instant() {
+    let mut outer = Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone());
+    let range = MetricsRange::new(
+        SAMPLE_RANGE.start + METRICS_ONE,
+        SAMPLE_RANGE.start + METRICS_ONE,
+    );
+    let mut child1 = Frame::new(range.clone(), TEST_SYMBOL.clone());
+    let mut child2 = Frame::new(range.clone(), TEST_SYMBOL.clone());
+    let child3 = Frame::new(range.clone(), TEST_SYMBOL.clone());
+    assert!(child2.add_child(child3).is_ok());
+    assert!(child1.add_child(child2).is_ok());
+    assert!(outer.add_child(child1).is_ok());
+}
+
+#[test]
+fn add_child_multiple_instant() {
+    let mut outer = Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone());
+    let range = MetricsRange::new(
+        SAMPLE_RANGE.start + METRICS_ONE,
+        SAMPLE_RANGE.start + METRICS_ONE,
+    );
+    let child1 = Frame::new(range.clone(), TEST_SYMBOL.clone());
+    let child2 = Frame::new(range.clone(), TEST_SYMBOL.clone());
+    assert!(outer.add_child(child1).is_ok());
+    assert!(outer.add_child(child2).is_ok());
+}
+
+#[test]
+fn add_child_multiple_nested_instant() {
+    let mut outer = Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone());
+    let range = MetricsRange::new(
+        SAMPLE_RANGE.start + METRICS_ONE,
+        SAMPLE_RANGE.start + METRICS_ONE,
+    );
+    let mut child1 = Frame::new(range.clone(), TEST_SYMBOL.clone());
+    let child2 = Frame::new(range.clone(), TEST_SYMBOL.clone());
+    let child3 = Frame::new(range.clone(), TEST_SYMBOL.clone());
+    assert!(child1.add_child(child2).is_ok());
+    assert!(child1.add_child(child3).is_ok());
+    assert!(outer.add_child(child1).is_ok());
+}
+
+#[test]
+fn add_child_adjacent_ends_no_straightline() {
+    let mut outer = Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone());
+    let child1 = Frame::new(SAMPLE_RANGE, TEST_SYMBOL.clone());
+    let beginning = Frame::new(
+        MetricsRange::new(SAMPLE_RANGE.start, SAMPLE_RANGE.start),
+        TEST_SYMBOL.clone(),
+    );
+    let end = Frame::new(
+        MetricsRange::new(SAMPLE_RANGE.end, SAMPLE_RANGE.end),
+        TEST_SYMBOL.clone(),
+    );
+    outer.add_child(child1).unwrap();
+    assert!(outer.add_child(beginning).is_ok());
+    assert!(outer.add_child(end).is_ok());
+}
+
+#[test]
+fn add_adjacent_start_invariant() {
+    let start = Metrics {
+        ts: 100,
+        cycles: 100,
+        insn_count: 100,
+    };
+    let start_off = Metrics {
+        ts: 100,
+        cycles: 110,
+        insn_count: 110,
+    };
+    let end = Metrics {
+        ts: 200,
+        cycles: 200,
+        insn_count: 200,
+    };
+    let mut outer = Frame::new(MetricsRange::new(start, end), TEST_SYMBOL.clone());
+    let child = Frame::new(
+        MetricsRange::new(start_off, start_off + METRICS_ONE),
+        TEST_SYMBOL.clone(),
+    );
+    outer.add_child(child).unwrap();
+    assert!(outer.check_invariant());
+}
+
+#[test]
+fn add_adjacent_end_invariant() {
+    let start = Metrics {
+        ts: 100,
+        cycles: 100,
+        insn_count: 100,
+    };
+    let end = Metrics {
+        ts: 200,
+        cycles: 200,
+        insn_count: 200,
+    };
+    let end_off = Metrics {
+        ts: 200,
+        cycles: 190,
+        insn_count: 190,
+    };
+    let mut outer = Frame::new(MetricsRange::new(start, end), TEST_SYMBOL.clone());
+    let child = Frame::new(
+        MetricsRange::new(end_off - METRICS_ONE, end_off),
+        TEST_SYMBOL.clone(),
+    );
+    outer.add_child(child).unwrap();
+    assert!(outer.check_invariant());
+}
+
+#[test]
 fn event_sorts() {
     let mut event = Event::new(10, "Test Event".to_string(), "Description".to_string());
     event.add_occurence(SAMPLE_RANGE.start);

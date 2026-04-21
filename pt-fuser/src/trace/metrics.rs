@@ -252,7 +252,12 @@ impl MetricsRange {
     }
 
     pub fn includes_range(&self, other: &MetricsRange) -> bool {
-        self.start.ts <= other.start.ts && other.end.ts <= self.end.ts
+        self.start.ts <= other.start.ts
+            && other.end.ts <= self.end.ts
+            && self.start.cycles <= other.start.cycles
+            && other.end.cycles <= self.end.cycles
+            && self.start.insn_count <= other.start.insn_count
+            && other.end.insn_count <= self.end.insn_count
     }
 }
 

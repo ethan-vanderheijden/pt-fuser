@@ -65,7 +65,7 @@ impl Frame {
                 Chunk::Frame(_) => continue,
                 Chunk::Straightline(straightline) => {
                     if straightline.metrics.includes_range(&child.metrics) {
-                        if child.metrics.start.ts > straightline.metrics.start.ts {
+                        if child.metrics.start != straightline.metrics.start {
                             let before = Straightline {
                                 metrics: MetricsRange::new(
                                     straightline.metrics.start,
@@ -75,7 +75,7 @@ impl Frame {
                             self.chunks.insert(i, before.into());
                             i += 1;
                         }
-                        if child.metrics.end.ts < straightline.metrics.end.ts {
+                        if child.metrics.end != straightline.metrics.end {
                             let after = Straightline {
                                 metrics: MetricsRange::new(
                                     child.metrics.end,
@@ -90,6 +90,20 @@ impl Frame {
                 }
             }
         }
+
+        if child.metrics.total_time() == 0
+            && child.metrics.total_cycles() == 0
+            && child.metrics.total_insn() == 0
+        {
+            if child.metrics.start == self.metrics.start {
+                self.chunks.insert(0, child.into());
+                return Ok(());
+            } else if child.metrics.end == self.metrics.end {
+                self.chunks.push(child.into());
+                return Ok(());
+            }
+        }
+
         Err(Error::InvalidRange(child.metrics))
     }
 
