@@ -3,7 +3,7 @@ use std::{
 };
 
 use pt_fuser::trace::{
-    SymbolInfo, Trace,
+    SymbolInfo, Trace, TraceError,
     builder::{BuilderResult, TraceBuilder},
     metrics::Metrics,
 };
@@ -12,8 +12,6 @@ use threadpool::ThreadPool;
 use tracing::{info, warn};
 
 use crate::perf;
-
-const ERROR_EVENT_ID: u32 = 1;
 
 static THREADPOOL: OnceLock<ThreadPool> = OnceLock::new();
 
@@ -138,7 +136,11 @@ fn process_return_event(state: &mut State, sample: &perf::perf_dlfilter_sample, 
                     sample.tid,
                     trace.root_frame().metrics.start.ts,
                     trace.root_frame().metrics.end.ts,
-                    trace.get_event(ERROR_EVENT_ID).unwrap().occurences().len()
+                    trace
+                        .get_event(TraceError::DataCollectionError as u32)
+                        .unwrap()
+                        .occurences()
+                        .len()
                 );
                 export_trace(state, sample.tid, trace);
             }
@@ -201,7 +203,7 @@ pub(crate) fn process_branch_event(
 
     if let Some(builder) = builder {
         if sample.ip == 0 {
-            builder.event_occured(ERROR_EVENT_ID, cur_metrics);
+            builder.event_occured(TraceError::DataCollectionError as u32, cur_metrics);
         }
 
         let current_symbol = builder.get_frame_symbol(0);
@@ -247,7 +249,7 @@ pub(crate) fn process_branch_event(
         state.traces_limit = state.traces_limit.map(|limit| limit - 1);
         let mut new_builder = TraceBuilder::new(cur_metrics, target_symbol);
         new_builder.new_event(
-            ERROR_EVENT_ID,
+            TraceError::DataCollectionError as u32,
             "Errors".to_string(),
             "Trace decoder hit an error. Callstacks may be corrupted.".to_string(),
         );

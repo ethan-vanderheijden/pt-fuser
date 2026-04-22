@@ -267,6 +267,11 @@ impl Trace {
     }
 }
 
+pub enum TraceError {
+    DataCollectionError = 1,
+    LostFrameWhileMerging = 555740177,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Error {
     InvalidRange(MetricsRange),

@@ -9,13 +9,11 @@ use std::{
 use tracing::{info, warn};
 
 use crate::trace::{
-    Chunk, Event, Frame, Trace,
+    Chunk, Event, Frame, Trace, TraceError,
     metrics::{Metrics, MetricsRange},
 };
 
 const FREQUENT_FRAME_THRESH: f32 = 0.7;
-
-const LOST_FRAME_EVENT_ID: u32 = 555740177;
 
 /// # Merging Algorithm
 ///
@@ -91,7 +89,7 @@ pub fn merge_traces(traces: &[&Trace]) -> Trace {
 
     if !lost_frame_occurences.is_empty() {
         let lost_frame_event = Event::from_occurences(
-            LOST_FRAME_EVENT_ID,
+            TraceError::LostFrameWhileMerging as u32,
             "Lost Frames".to_string(),
             "A frame could not be added because it overlapped with adjacent frames.".to_string(),
             lost_frame_occurences,
