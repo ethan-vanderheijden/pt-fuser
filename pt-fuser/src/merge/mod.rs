@@ -34,7 +34,7 @@ const FREQUENT_FRAME_THRESH: f32 = 0.7;
 /// ## Step 2
 ///
 /// Then, for each section of the merged string, we find the most common stack frame across
-/// all the traces, and if it appears more than 2/3 of the time, we add it to the merged trace.
+/// all the traces, and if it appears in >70% of the time, we add it to the merged trace.
 ///
 /// ### Example:
 /// for the section before the first "f1":                                               \
@@ -42,12 +42,12 @@ const FREQUENT_FRAME_THRESH: f32 = 0.7;
 ///
 /// for the section between "f1" and "f2":                                               \
 /// a() := "x y g z", b() := "r g s", c() := "t z"                                       \
-/// => we find that g() appears in 2/3 of the traces, so we add it to the merged trace   \
+/// => we find that g() appears in >70% of the traces, so we add it to the merged trace   \
 /// => r() := "f1 g f2"
 ///
 /// Then, we recurse on the section between "g" and "f2":                                \
 /// a() := "z", b() := "s", c() := "z"                                                   \
-/// => we find that z() appears in 2/3 of the traces, so we add it to the merged trace   \
+/// => we find that z() appears in >70% of the traces, so we add it to the merged trace   \
 /// => r() := "f1 g z f2"
 ///
 /// Then, we recurse on the section between "z" and "f2":                                \
@@ -55,7 +55,7 @@ const FREQUENT_FRAME_THRESH: f32 = 0.7;
 ///
 /// for the section after "f2":                                                          \
 /// a() := "h", b() := "h", c() := "e"                                                   \
-/// => we find that h() appears in 2/3 of the traces, so we add it to the merged trace   \
+/// => we find that h() appears in >70% of the traces, so we add it to the merged trace   \
 /// => r() := "f1 g z f2 h"
 ///
 /// Then, we recurse on the section after "h":                                           \
@@ -84,6 +84,7 @@ pub fn merge_traces(traces: &[&Trace]) -> Trace {
         &mut lost_frame_occurences,
         FREQUENT_FRAME_THRESH,
     );
+    lost_frame_occurences.sort();
     info!("Merging events...");
     let mut merged_events = merge_events(traces, merged_frame.metrics);
 
