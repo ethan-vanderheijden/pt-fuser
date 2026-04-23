@@ -9,7 +9,7 @@ use pt_fuser::trace::{
 };
 use regex::Regex;
 use threadpool::ThreadPool;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::perf;
 
@@ -154,6 +154,33 @@ fn process_return_event(state: &mut State, sample: &perf::perf_dlfilter_sample, 
     }
 }
 
+fn process_call_event(
+    state: &mut State,
+    sample: &perf::perf_dlfilter_sample,
+    call_target: SymbolInfo,
+) {
+    let builder = state.builders.get_mut(&sample.tid).unwrap();
+    let root_frame = builder.get_frame_symbol(builder.callstack_depth() - 1);
+    if &call_target == root_frame {
+        error!(
+            "A function was called at timestamp={}, but that function is the same as the root function of the \
+            current trace. Unless this is supposed to be a recursive function, it likely means the root frame \
+            already returned, but we missed it due to a trace error. In this case, the trace is corrupted beyond \
+            repair, so we will end it now.",
+            sample.time
+        );
+        let callstack_depth = builder.callstack_depth();
+        process_return_event(state, sample, callstack_depth);
+    } else {
+        let cur_metrics = Metrics {
+            ts: sample.time,
+            cycles: state.cyc_cnt,
+            insn_count: state.insn_cnt,
+        };
+        builder.push_frame(cur_metrics, call_target);
+    }
+}
+
 pub(crate) fn process_branch_event(
     state: &mut State,
     sample: &perf::perf_dlfilter_sample,
@@ -214,11 +241,9 @@ pub(crate) fn process_branch_event(
                     process_return_event(state, sample, levels);
                 } else {
                     process_return_event(state, sample, 2);
-                    let builder = state
-                        .builders
-                        .get_mut(&sample.tid)
-                        .expect("Builder should exist since [unknown] can't be top-level frame.");
-                    builder.push_frame(cur_metrics, target_symbol);
+                    if state.builders.contains_key(&sample.tid) {
+                        process_call_event(state, sample, target_symbol);
+                    }
                 }
             }
         } else if !current_symbol.contains(sample.addr) {
@@ -233,7 +258,7 @@ pub(crate) fn process_branch_event(
             );
 
             if (sample.flags & perf::PERF_DLFILTER_FLAG_CALL) != 0 || returning_levels.is_none() {
-                builder.push_frame(cur_metrics, target_symbol);
+                process_call_event(state, sample, target_symbol);
             } else if let Some(returning_levels) = returning_levels {
                 process_return_event(state, sample, returning_levels);
             }
