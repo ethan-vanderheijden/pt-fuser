@@ -1,6 +1,10 @@
 use clap::{Parser, ValueEnum};
 use pt_fuser::{
-    analysis::{FrameFinder, filter::{self, Filter}, histogram::HistogramApp},
+    analysis::{
+        FrameFinder,
+        filter::{self, Filter},
+        histogram::HistogramApp,
+    },
     trace::{Frame, Trace, TraceError},
 };
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -44,7 +48,7 @@ fn main() -> eframe::Result<()> {
             Trace::bin_deserialize(&trace_data, cli.gzip).expect("pt-fuser trace file is malformed")
         })
         .collect::<Vec<Trace>>();
-    
+
     for filter in &cli.filter {
         traces = filter::filter_traces(traces, filter);
     }
@@ -95,10 +99,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
     let app = match cli.action {
         Action::Errors => HistogramApp::new(
-            format!(
-                "Error Count Distribution of {} traces",
-                traces.len()
-            ),
+            format!("Error Count Distribution of {} traces", traces.len()),
             &data,
             "Error Count".into(),
             "Count".into(),

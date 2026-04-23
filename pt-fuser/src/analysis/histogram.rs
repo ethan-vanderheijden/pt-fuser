@@ -51,7 +51,7 @@ fn bins(data: &[f64]) -> Bins {
     Bins {
         start,
         step,
-        counts: vec![0; ((max.ceil() as u64 - start) / step + 1) as usize],
+        counts: vec![0; ((max.floor() as u64 - start) / step + 1) as usize],
     }
 }
 
@@ -72,6 +72,27 @@ fn create_histogram(name: &str, data: &[f64]) -> BarChart {
     }
 
     BarChart::new(name, bars)
+}
+
+fn compute_quartiles(data: &[f64]) -> (f64, f64, f64, f64, f64) {
+    let mut sorted = data.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let min = *sorted.first().unwrap();
+    let max = *sorted.last().unwrap();
+    let (q1, median, q3) = if sorted.len() % 2 == 0 {
+        (
+            sorted[sorted.len() / 4],
+            sorted[sorted.len() / 2],
+            sorted[3 * sorted.len() / 4],
+        )
+    } else {
+        (
+            (sorted[sorted.len() / 4] + sorted[sorted.len() / 4 + 1]) / 2.0,
+            (sorted[sorted.len() / 2] + sorted[sorted.len() / 2 + 1]) / 2.0,
+            (sorted[3 * sorted.len() / 4] + sorted[3 * sorted.len() / 4 + 1]) / 2.0,
+        )
+    };
+    (min, q1, median, q3, max)
 }
 
 pub struct HistogramApp<'a> {
@@ -97,7 +118,14 @@ impl<'a> eframe::App for HistogramApp<'a> {
         egui::CentralPanel::default()
             .frame(egui::Frame::default().inner_margin(30.0))
             .show_inside(ui, |ui| {
-                ui.vertical_centered(|ui| ui.heading(&self.name));
+                ui.vertical_centered(|ui| {
+                    ui.heading(&self.name);
+                    let (min, q1, median, q3, max) = compute_quartiles(self.data);
+                    ui.label(format!(
+                        "Min: {:.0}, Q1: {:.0}, Median: {:.0}, Q3: {:.0}, Max: {:.0}",
+                        min, q1, median, q3, max
+                    ));
+                });
                 Plot::new(&self.name)
                     .x_axis_label(&self.x_axis)
                     .y_axis_label(&self.y_axis)

@@ -1,7 +1,11 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use pt_fuser::{merge, trace::Trace};
+use pt_fuser::{
+    analysis::filter::{self, Filter},
+    merge,
+    trace::Trace,
+};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tracing::{Level, info};
 
@@ -14,6 +18,8 @@ struct Cli {
         help = "Whether the input trace files are gzipped"
     )]
     gzip: bool,
+    #[clap(long, help = Filter::HELP)]
+    filter: Vec<Filter>,
     output: String,
     input: Vec<String>,
 }
@@ -33,7 +39,7 @@ fn main() -> ExitCode {
 
     info!("Reading files...");
 
-    let traces = cli
+    let mut traces = cli
         .input
         .par_iter()
         .map(|input| {
@@ -41,6 +47,13 @@ fn main() -> ExitCode {
             Trace::bin_deserialize(&trace_data, cli.gzip).expect("pt-fuser trace file is malformed")
         })
         .collect::<Vec<Trace>>();
+
+    if cli.filter.len() > 0 {
+        info!("Filtering traces...");
+    }
+    for filter in &cli.filter {
+        traces = filter::filter_traces(traces, filter);
+    }
 
     let traces_ref = traces.iter().collect::<Vec<&Trace>>();
     let result = merge::merge_traces(&traces_ref);
