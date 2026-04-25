@@ -12,7 +12,7 @@ use regex::Regex;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
 enum Action {
-    Errors,
+    Error,
     Latency,
 }
 
@@ -70,7 +70,7 @@ fn main() -> eframe::Result<()> {
         };
         let frame_finder = FrameFinder::new(trace.root_frame(), &pred);
         match cli.action {
-            Action::Errors => {
+            Action::Error => {
                 let Some(errors) = trace.get_event(TraceError::DataCollectionError as u32) else {
                     data.push(0f64);
                     continue;
@@ -98,7 +98,7 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions::default();
     let app = match cli.action {
-        Action::Errors => HistogramApp::new(
+        Action::Error => HistogramApp::new(
             format!("Error Count Distribution of {} traces", traces.len()),
             &data,
             "Error Count".into(),
