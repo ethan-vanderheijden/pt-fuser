@@ -186,3 +186,17 @@ pub fn filter_traces(mut traces: Vec<Trace>, filter: &Filter) -> Vec<Trace> {
     });
     traces
 }
+
+pub fn filter_bitmap(traces: &Vec<Trace>, filter: &Filter) -> Vec<bool> {
+    traces
+        .iter()
+        .map(|trace| {
+            if let Some(target) = &filter.target {
+                let pred = |frame: &Frame| target.is_match(&frame.symbol.name);
+                run_filter(FrameFinder::new(trace.root_frame(), &pred), filter, trace)
+            } else {
+                run_filter(iter::once(trace.root_frame()), filter, trace)
+            }
+        })
+        .collect()
+}

@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use crate::{
-    merge::{self, Id},
+    merge,
     trace::{
         Annotation, Event, Frame, SymbolInfo, Trace,
         metrics::{Metrics, MetricsRange},
@@ -35,13 +35,13 @@ struct TestLCS {
     id: u32,
 }
 
-impl Id for TestLCS {
+impl merge::Id for TestLCS {
     fn id(&self) -> u32 {
         self.id
     }
 }
 
-impl Id for &TestLCS {
+impl merge::Id for &TestLCS {
     fn id(&self) -> u32 {
         self.id
     }
@@ -104,7 +104,7 @@ fn produce_frames_from_metrics(root: (u64, u64), children: &[(u64, u64, Option<&
     frame
 }
 
-fn extract_ids(frames: &[impl Id]) -> Vec<u32> {
+fn extract_ids(frames: &[impl merge::Id]) -> Vec<u32> {
     frames.iter().map(|f| f.id()).collect()
 }
 
@@ -114,7 +114,7 @@ fn seq(xs: &[u32]) -> Vec<TestLCS> {
 
 #[test]
 fn index_empty() {
-    let (n, r) = merge::index_children(&[]);
+    let (n, r) = merge::index_children(&[], None);
     assert_eq!(n, 0);
     assert_eq!(r.len(), 0);
 }
@@ -122,7 +122,7 @@ fn index_empty() {
 #[test]
 fn index_single() {
     let frame = produce_chunks_from_symbols(&["a", "b", "c"]);
-    let (n, r) = merge::index_children(&[&frame]);
+    let (n, r) = merge::index_children(&[&frame], None);
     assert_eq!(n, 3);
     assert_eq!(r.len(), 1);
     assert_eq!(extract_ids(&r[0]), vec![1, 2, 3]);
@@ -133,7 +133,7 @@ fn index_3_no_repeat() {
     let frame1 = produce_chunks_from_symbols(&["a", "b", "c", "d"]);
     let frame2 = produce_chunks_from_symbols(&["b", "c", "e", "g", "h", "d"]);
     let frame3 = produce_chunks_from_symbols(&["f", "a", "d", "e"]);
-    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3]);
+    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3], None);
     assert_eq!(n, 8);
     assert_eq!(r.len(), 3);
     assert_eq!(extract_ids(&r[0]), vec![1, 2, 3, 4]);
@@ -146,7 +146,7 @@ fn index_3_repeating() {
     let frame1 = produce_chunks_from_symbols(&["a", "b", "a", "c", "d", "c"]);
     let frame2 = produce_chunks_from_symbols(&["b", "c", "a", "a", "e", "g", "e", "h"]);
     let frame3 = produce_chunks_from_symbols(&["c", "a", "c", "f", "h", "a", "d", "e"]);
-    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3]);
+    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3], None);
     assert_eq!(n, 11);
     assert_eq!(r.len(), 3);
     assert_eq!(extract_ids(&r[0]), vec![1, 2, 3, 4, 5, 6]);
@@ -161,7 +161,7 @@ fn index_3_with_pauses() {
     let frame3 = produce_chunks_from_symbols(&[
         "[pause]", "[pause]", "c", "a", "c", "f", "[pause]", "h", "a", "d", "e",
     ]);
-    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3]);
+    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3], None);
     assert_eq!(n, 14);
     assert_eq!(r.len(), 3);
     assert_eq!(extract_ids(&r[0]), vec![1, 2, 3, 4, 5, 6, 7, 8]);
@@ -339,7 +339,7 @@ fn merge_traces_no_children() {
     let trace2 = Trace::new(frame2, vec![]);
     let frame3 = produce_frames_from_metrics((400, 464), &[]);
     let trace3 = Trace::new(frame3, vec![]);
-    let merged = merge::merge_traces(&[&trace1, &trace2, &trace3]);
+    let merged = merge::merge_traces(&[&trace1, &trace2, &trace3], None);
     assert_eq!(merged.root_frame().metrics.start, Metrics::constant(0));
     assert_eq!(
         merged.root_frame().metrics.end,
@@ -355,7 +355,7 @@ fn merge_traces_common_children() {
     let trace2 = Trace::new(frame2, vec![]);
     let frame3 = produce_frames_from_metrics((400, 464), &[(415, 430, None), (445, 458, None)]);
     let trace3 = Trace::new(frame3, vec![]);
-    let merged = merge::merge_traces(&[&trace1, &trace2, &trace3]);
+    let merged = merge::merge_traces(&[&trace1, &trace2, &trace3], None);
     assert_eq!(merged.root_frame().metrics.start, Metrics::constant(0));
     assert_eq!(
         merged.root_frame().metrics.end,
@@ -412,6 +412,7 @@ fn merge_frame_frequent_children() {
     merge::merge_children(
         &mut merged,
         &[&frame1, &frame2, &frame3],
+        None,
         &mut Vec::new(),
         0.6,
     );
@@ -474,6 +475,7 @@ fn merge_frame_with_pauses() {
     merge::merge_children(
         &mut merged,
         &[&frame1, &frame2, &frame3],
+        None,
         &mut Vec::new(),
         0.6,
     );
@@ -527,7 +529,7 @@ fn merge_frame_with_anotations() {
         .iter()
         .map(|frame| Trace::new(frame.clone(), vec![]))
         .collect::<Vec<_>>();
-    let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>());
+    let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), None);
     assert_eq!(merged.root_frame().chunks().len(), 3);
 
     let root_anotations = &merged.root_frame().annotations;
@@ -585,6 +587,98 @@ fn merge_frame_with_anotations() {
             );
         }
         _ => panic!("Expected std dev annotation to be a double"),
+    }
+}
+
+#[test]
+fn merge_traces_export_raw() {
+    let frame1 = produce_frames_from_metrics((500, 590), &[(520, 540, Some("a"))]);
+    let mut root1 = Frame::new(
+        MetricsRange::new(Metrics::constant(500), Metrics::constant(600)),
+        DUMMY_SYMBOL.clone(),
+    );
+    root1.add_child(frame1).unwrap();
+    let trace1 = Trace::new(root1, vec![]);
+
+    let frame2 = produce_frames_from_metrics((300, 380), &[(310, 335, Some("a"))]);
+    let mut root2 = Frame::new(
+        MetricsRange::new(Metrics::constant(300), Metrics::constant(400)),
+        DUMMY_SYMBOL.clone(),
+    );
+    root2.add_child(frame2).unwrap();
+    let trace2 = Trace::new(root2, vec![]);
+
+    let frame3 = produce_frames_from_metrics((400, 464), &[]);
+    let mut root3 = Frame::new(
+        MetricsRange::new(Metrics::constant(400), Metrics::constant(500)),
+        DUMMY_SYMBOL.clone(),
+    );
+    root3.add_child(frame3).unwrap();
+    let trace3 = Trace::new(root3, vec![]);
+
+    let frame4 = produce_frames_from_metrics((0, 80), &[(10, 60, Some("a"))]);
+    let mut root4 = Frame::new(
+        MetricsRange::new(Metrics::constant(0), Metrics::constant(100)),
+        DUMMY_SYMBOL.clone(),
+    );
+    root4.add_child(frame4).unwrap();
+    let trace4 = Trace::new(root4, vec![]);
+
+    let merged = merge::merge_traces(
+        &[&trace1, &trace2, &trace3, &trace4],
+        Some(&["t1", "t2", "t3", "t4"]),
+    );
+    let root_frame = merged.root_frame();
+    let root_raw_data = root_frame
+        .annotations
+        .get(merge::ANNOTATION_RAW_DATA_NAME)
+        .expect("Root frame should have raw data annotation");
+    match root_raw_data {
+        Annotation::Map(map) => {
+            assert_eq!(map.get("t1"), Some(&Annotation::Uint64(100)));
+            assert_eq!(map.get("t2"), Some(&Annotation::Uint64(100)));
+            assert_eq!(map.get("t3"), Some(&Annotation::Uint64(100)));
+            assert_eq!(map.get("t4"), Some(&Annotation::Uint64(100)));
+        }
+        _ => panic!("Expected root raw data annotation to be a map"),
+    }
+
+    match &root_frame.chunks()[0] {
+        merge::Chunk::Frame(child) => {
+            let child_raw_data = child
+                .annotations
+                .get(merge::ANNOTATION_RAW_DATA_NAME)
+                .expect("Child frame should have raw data annotation");
+            match child_raw_data {
+                Annotation::Map(map) => {
+                    assert_eq!(map.get("t1"), Some(&Annotation::Uint64(90)));
+                    assert_eq!(map.get("t2"), Some(&Annotation::Uint64(80)));
+                    assert_eq!(map.get("t3"), Some(&Annotation::Uint64(64)));
+                    assert_eq!(map.get("t4"), Some(&Annotation::Uint64(80)));
+                }
+                _ => panic!("Expected child raw data annotation to be a map"),
+            }
+
+            match &child.chunks()[1] {
+                merge::Chunk::Frame(grandchild) => {
+                    let grandchild_raw_data = grandchild
+                        .annotations
+                        .get(merge::ANNOTATION_RAW_DATA_NAME)
+                        .expect("Grandchild frame should have raw data annotation");
+                    match grandchild_raw_data {
+                        Annotation::Map(map) => {
+                            assert_eq!(map.get("t1"), Some(&Annotation::Uint64(20)));
+                            assert_eq!(map.get("t2"), Some(&Annotation::Uint64(25)));
+                            assert!(!map.contains_key("t3"));
+                            assert_eq!(map.get("t4"), Some(&Annotation::Uint64(50)));
+                        }
+                        _ => panic!("Expected grandchild raw data annotation to be a map"),
+                    }
+                }
+                _ => panic!("Expected grandchild chunk to be a frame"),
+            }
+        }
+        _ => panic!("Expected first chunk to be a frame"),
     }
 }
 
