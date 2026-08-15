@@ -72,7 +72,9 @@ fn export_trace(output_dir: &str, trace_num: u32, tid: i32, trace: Trace) {
     THREADPOOL
         .get_or_init(|| {
             ThreadPool::new(
-                <NonZero<usize> as Into<usize>>::into(thread::available_parallelism().unwrap()) - 1,
+                <NonZero<usize> as Into<usize>>::into(thread::available_parallelism().unwrap())
+                    .saturating_sub(1)
+                    .max(1),
             )
         })
         .execute(move || {
