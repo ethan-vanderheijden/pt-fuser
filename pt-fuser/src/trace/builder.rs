@@ -1,5 +1,24 @@
 use crate::trace::{self, Event, Frame, Metrics, MetricsRange, SymbolInfo, Trace};
 
+pub struct FrameCompletionOptions {
+    // sometimes, calling a function first goes to the Procedure Linkage Table (PLT) stub, which
+    // immediately jumps to the target function. We can remove the PLT stub frame from the trace.
+    pub remove_plt_stubs: bool,
+}
+
+impl Default for FrameCompletionOptions {
+    fn default() -> Self {
+        FrameCompletionOptions {
+            remove_plt_stubs: false,
+        }
+    }
+}
+
+fn is_plt_stub(parent_symbol: &SymbolInfo, child_symbol: &SymbolInfo) -> bool {
+    parent_symbol.name.ends_with("@plt")
+        && child_symbol.name == parent_symbol.name.trim_end_matches("@plt")
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct IncompleteFrame {
     start_metrics: Metrics,
@@ -9,7 +28,21 @@ struct IncompleteFrame {
 }
 
 impl IncompleteFrame {
-    fn complete(mut self, end_metrics: Metrics) -> Result<Frame, trace::Error> {
+    fn complete(
+        mut self,
+        end_metrics: Metrics,
+        options: FrameCompletionOptions,
+    ) -> Result<Frame, trace::Error> {
+        if options.remove_plt_stubs
+            && self.child_frames.len() == 1
+            && self.pauses.is_empty()
+            && is_plt_stub(&self.symbol, &self.child_frames[0].symbol)
+        {
+            let mut child = self.child_frames.remove(0);
+            child.metrics = MetricsRange::new(self.start_metrics, end_metrics);
+            return Ok(child);
+        }
+
         let mut completed = Frame::new(
             MetricsRange::new(self.start_metrics, end_metrics),
             self.symbol,
@@ -90,10 +123,15 @@ impl TraceBuilder {
         self.callstack.push(old_frame);
     }
 
-    pub fn complete_frame(mut self, end_metrics: Metrics) -> Result<BuilderResult, trace::Error> {
+    pub fn complete_frame(
+        mut self,
+        end_metrics: Metrics,
+        options: Option<FrameCompletionOptions>,
+    ) -> Result<BuilderResult, trace::Error> {
         self.ensure_monotonic(end_metrics);
+        let options = options.unwrap_or_default();
         if self.callstack.is_empty() {
-            let completed_frame = self.current_frame.complete(end_metrics)?;
+            let completed_frame = self.current_frame.complete(end_metrics, options)?;
             Ok(BuilderResult::Completed(Trace::new(
                 completed_frame,
                 self.events,
@@ -101,7 +139,7 @@ impl TraceBuilder {
         } else {
             let prev = self.callstack.pop().unwrap();
             let current_frame = std::mem::replace(&mut self.current_frame, prev);
-            let completed_frame = current_frame.complete(end_metrics)?;
+            let completed_frame = current_frame.complete(end_metrics, options)?;
             self.current_frame.child_frames.push(completed_frame);
             Ok(BuilderResult::Builder(self))
         }
@@ -193,7 +231,9 @@ mod test {
             pauses: Vec::new(),
             symbol: TEST_SYMBOL.clone(),
         };
-        let completed = incomplete.complete(SAMPLE_RANGE.end).unwrap();
+        let completed = incomplete
+            .complete(SAMPLE_RANGE.end, FrameCompletionOptions::default())
+            .unwrap();
         assert_eq!(completed.chunks().len(), 1);
         assert!(completed.check_invariant());
     }
@@ -208,7 +248,9 @@ mod test {
             pauses: Vec::new(),
             symbol: TEST_SYMBOL.clone(),
         };
-        let completed = incomplete.complete(SAMPLE_RANGE.end).unwrap();
+        let completed = incomplete
+            .complete(SAMPLE_RANGE.end, FrameCompletionOptions::default())
+            .unwrap();
         assert_eq!(completed.chunks().len(), 5);
         assert!(completed.check_invariant());
     }
@@ -227,7 +269,9 @@ mod test {
             pauses: vec![pause1, pause2],
             symbol: TEST_SYMBOL.clone(),
         };
-        let completed = incomplete.complete(SAMPLE_RANGE.end).unwrap();
+        let completed = incomplete
+            .complete(SAMPLE_RANGE.end, FrameCompletionOptions::default())
+            .unwrap();
         assert_eq!(completed.chunks().len(), 7);
         assert!(completed.check_invariant());
         let _ = extract_pause_chunk(&completed.chunks()[1]);
@@ -236,9 +280,42 @@ mod test {
     }
 
     #[test]
+    fn complete_without_plt_stub() {
+        let inner_frame = Frame::new(
+            MetricsRange::new(INNER_RANGE1.start, INNER_RANGE1.end),
+            SymbolInfo {
+                name: "my_func".to_string(),
+                offset: 0,
+                size: 0,
+            },
+        );
+        let incomplete = IncompleteFrame {
+            start_metrics: SAMPLE_RANGE.start,
+            child_frames: vec![inner_frame],
+            pauses: Vec::new(),
+            symbol: SymbolInfo {
+                name: "my_func@plt".to_string(),
+                offset: 0,
+                size: 0,
+            },
+        };
+        let completed = incomplete
+            .complete(
+                SAMPLE_RANGE.end,
+                FrameCompletionOptions {
+                    remove_plt_stubs: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(completed.symbol.name, "my_func");
+        assert_eq!(completed.metrics, SAMPLE_RANGE);
+        assert_eq!(completed.chunks().len(), 1);
+    }
+
+    #[test]
     fn build_trace_simple() {
         let builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
-        let result = builder.complete_frame(SAMPLE_RANGE.end).unwrap();
+        let result = builder.complete_frame(SAMPLE_RANGE.end, None).unwrap();
         match result {
             BuilderResult::Completed(trace) => {
                 assert_eq!(trace.root.metrics, SAMPLE_RANGE);
@@ -256,16 +333,22 @@ mod test {
     fn build_trace_nested() {
         let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
         builder.push_frame(INNER_RANGE1.start, TEST_SYMBOL.clone());
-        let mut builder = extract_builder(builder.complete_frame(INNER_RANGE1.end).unwrap());
+        let mut builder = extract_builder(builder.complete_frame(INNER_RANGE1.end, None).unwrap());
         builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone());
         builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone());
-        let builder = extract_builder(builder.complete_frame(INNER_RANGE2.end).unwrap());
-        let builder = extract_builder(builder.complete_frame(SAMPLE_RANGE.end).unwrap());
-        match builder.complete_frame(SAMPLE_RANGE.end).unwrap() {
+        let builder = extract_builder(builder.complete_frame(INNER_RANGE2.end, None).unwrap());
+        let builder = extract_builder(builder.complete_frame(SAMPLE_RANGE.end, None).unwrap());
+        match builder.complete_frame(SAMPLE_RANGE.end, None).unwrap() {
             BuilderResult::Completed(trace) => {
                 assert_eq!(trace.root.chunks().len(), 4);
-                assert!(matches!(&trace.root.chunks()[0], trace::Chunk::Straightline(_)));
-                assert!(matches!(&trace.root.chunks()[2], trace::Chunk::Straightline(_)));
+                assert!(matches!(
+                    &trace.root.chunks()[0],
+                    trace::Chunk::Straightline(_)
+                ));
+                assert!(matches!(
+                    &trace.root.chunks()[2],
+                    trace::Chunk::Straightline(_)
+                ));
 
                 match &trace.root.chunks()[1] {
                     trace::Chunk::Frame(frame) => {
@@ -316,30 +399,103 @@ mod test {
         let resumed = paused.resume(INNER_RANGE2.start);
         let builder = extract_builder(
             resumed
-                .complete_frame(INNER_RANGE2.end - METRICS_ONE)
+                .complete_frame(INNER_RANGE2.end - METRICS_ONE, None)
                 .unwrap(),
         );
 
-        match builder.complete_frame(INNER_RANGE2.end).unwrap() {
+        match builder.complete_frame(INNER_RANGE2.end, None).unwrap() {
             BuilderResult::Builder(_) => panic!("Expected completed trace"),
             BuilderResult::Completed(trace) => {
                 assert_eq!(trace.root_frame().chunks().len(), 5);
-                assert!(matches!(&trace.root_frame().chunks()[0], trace::Chunk::Straightline(_)));
-                assert!(matches!(&trace.root_frame().chunks()[2], trace::Chunk::Straightline(_)));
-                assert!(matches!(&trace.root_frame().chunks()[4], trace::Chunk::Straightline(_)));
+                assert!(matches!(
+                    &trace.root_frame().chunks()[0],
+                    trace::Chunk::Straightline(_)
+                ));
+                assert!(matches!(
+                    &trace.root_frame().chunks()[2],
+                    trace::Chunk::Straightline(_)
+                ));
+                assert!(matches!(
+                    &trace.root_frame().chunks()[4],
+                    trace::Chunk::Straightline(_)
+                ));
 
                 let pause = extract_pause_chunk(&trace.root_frame().chunks()[1]);
-                assert_eq!(pause, &MetricsRange::new(SAMPLE_RANGE.start + METRICS_ONE, INNER_RANGE1.start));
+                assert_eq!(
+                    pause,
+                    &MetricsRange::new(SAMPLE_RANGE.start + METRICS_ONE, INNER_RANGE1.start)
+                );
 
                 let frame = extract_frame_chunk(&trace.root_frame().chunks()[3]);
-                assert_eq!(frame.metrics, MetricsRange::new(INNER_RANGE1.start + METRICS_ONE, INNER_RANGE2.end - METRICS_ONE));
+                assert_eq!(
+                    frame.metrics,
+                    MetricsRange::new(
+                        INNER_RANGE1.start + METRICS_ONE,
+                        INNER_RANGE2.end - METRICS_ONE
+                    )
+                );
                 assert_eq!(frame.chunks().len(), 3);
-                assert!(matches!(&trace.root_frame().chunks()[0], trace::Chunk::Straightline(_)));
-                assert!(matches!(&trace.root_frame().chunks()[2], trace::Chunk::Straightline(_)));
+                assert!(matches!(
+                    &trace.root_frame().chunks()[0],
+                    trace::Chunk::Straightline(_)
+                ));
+                assert!(matches!(
+                    &trace.root_frame().chunks()[2],
+                    trace::Chunk::Straightline(_)
+                ));
 
                 let nested_pause = extract_pause_chunk(&frame.chunks()[1]);
-                assert_eq!(nested_pause, &MetricsRange::new(INNER_RANGE1.end, INNER_RANGE2.start));
+                assert_eq!(
+                    nested_pause,
+                    &MetricsRange::new(INNER_RANGE1.end, INNER_RANGE2.start)
+                );
             }
+        }
+    }
+
+    #[test]
+    fn build_without_plt_stubs() {
+        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
+        builder.push_frame(
+            INNER_RANGE1.start,
+            SymbolInfo {
+                name: "my_func@plt".to_string(),
+                offset: 0,
+                size: 0,
+            },
+        );
+        builder.push_frame(
+            INNER_RANGE1.start + METRICS_ONE,
+            SymbolInfo {
+                name: "my_func".to_string(),
+                offset: 0,
+                size: 0,
+            },
+        );
+        let builder = extract_builder(
+            builder
+                .complete_frame(INNER_RANGE1.end, Some(FrameCompletionOptions {
+                    remove_plt_stubs: true,
+                }))
+                .unwrap(),
+        );
+        let builder = extract_builder(
+            builder
+                .complete_frame(INNER_RANGE1.end, Some(FrameCompletionOptions {
+                    remove_plt_stubs: true,
+                }))
+                .unwrap(),
+        );
+        let final_result = builder.complete_frame(SAMPLE_RANGE.end, None).unwrap();
+        match final_result {
+            BuilderResult::Completed(trace) => {
+                assert_eq!(trace.root_frame().chunks().len(), 3);
+                let frame = extract_frame_chunk(&trace.root_frame().chunks()[1]);
+                assert_eq!(frame.symbol.name, "my_func");
+                assert_eq!(frame.metrics, MetricsRange::new(INNER_RANGE1.start, INNER_RANGE1.end));
+                assert_eq!(frame.chunks().len(), 1);
+            }
+            BuilderResult::Builder(_) => panic!("Expected trace to be completed"),
         }
     }
 
@@ -353,7 +509,7 @@ mod test {
         builder.event_occured(20, INNER_RANGE1.end);
         builder.event_occured(10, INNER_RANGE1.start);
 
-        let result = builder.complete_frame(SAMPLE_RANGE.end).unwrap();
+        let result = builder.complete_frame(SAMPLE_RANGE.end, None).unwrap();
         match result {
             BuilderResult::Completed(trace) => {
                 assert_eq!(trace.events.len(), 2);
@@ -416,7 +572,7 @@ mod test {
         builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone());
         assert!(
             builder
-                .complete_frame(INNER_RANGE2.start - METRICS_ONE)
+                .complete_frame(INNER_RANGE2.start - METRICS_ONE, None)
                 .is_ok()
         );
     }
