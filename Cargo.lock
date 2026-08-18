@@ -2808,7 +2808,7 @@ dependencies = [
 
 [[package]]
 name = "pt-fuser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "eframe",
@@ -3606,7 +3606,7 @@ dependencies = [
 
 [[package]]
 name = "transform-trace"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bindgen",
  "pt-fuser",

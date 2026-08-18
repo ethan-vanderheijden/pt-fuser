@@ -10,7 +10,7 @@ use std::{fmt::Display, io::Read};
 use flate2::Compression;
 use flexbuffers::FlexbufferSerializer;
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Error as DeError, ser::Error as SerError};
 
 use crate::trace::metrics::{Metrics, MetricsRange};
 
@@ -227,6 +227,12 @@ pub struct Trace {
 }
 
 impl Trace {
+    // versioning is vX.Y.Z where vX.Y represent the trace format version
+    // in trace serialization, first 16 bits are X, next 16 bits are Y,
+    // and next 32 bits are VERSION_DELIMITER (all in big-endian)
+    // after that, the actual trace data begins
+    const VERSION_DELIMITER: u32 = 0xDEADBEEF;
+
     pub fn new(root: Frame, events: Vec<Event>) -> Self {
         Self { root, events }
     }
@@ -243,7 +249,27 @@ impl Trace {
         self.events.iter().find(|event| event.id == id)
     }
 
+    fn get_major_minor() -> Result<(u16, u16), &'static str> {
+        let Ok(major_version) = env!("CARGO_PKG_VERSION_MAJOR").parse::<u16>() else {
+            return Err("Tool's major version is not a 16-bit integer");
+        };
+        let Ok(minor_version) = env!("CARGO_PKG_VERSION_MINOR").parse::<u16>() else {
+            return Err("Tool's minor version is not a 16-bit integer");
+        };
+        Ok((major_version, minor_version))
+    }
+
     pub fn bin_serialize(&self, gzip: bool) -> Result<Vec<u8>, flexbuffers::SerializationError> {
+        let (major, minor) =
+            Self::get_major_minor().map_err(flexbuffers::SerializationError::custom)?;
+        let mut data = major
+            .to_be_bytes()
+            .iter()
+            .chain(minor.to_be_bytes().iter())
+            .chain(Self::VERSION_DELIMITER.to_be_bytes().iter())
+            .copied()
+            .collect::<Vec<u8>>();
+
         let mut serializer = FlexbufferSerializer::new();
         self.serialize(&mut serializer)?;
         if gzip {
@@ -251,9 +277,11 @@ impl Trace {
             let mut encoder = flate2::read::GzEncoder::new(&encoded[..], Compression::default());
             let mut result = Vec::new();
             encoder.read_to_end(&mut result).unwrap();
-            Ok(result)
+            data.extend(result);
+            Ok(data)
         } else {
-            Ok(serializer.take_buffer())
+            data.extend(serializer.take_buffer());
+            Ok(data)
         }
     }
 
@@ -261,6 +289,31 @@ impl Trace {
         data: &[u8],
         gzip: bool,
     ) -> Result<Self, flexbuffers::DeserializationError> {
+        let (tool_major, tool_minor) =
+            Self::get_major_minor().map_err(flexbuffers::DeserializationError::custom)?;
+
+        if data.len() < 8 {
+            return Err(flexbuffers::DeserializationError::custom(
+                "Trace data is too short, it can't possible be correct!",
+            ));
+        }
+
+        let trace_major = u16::from_be_bytes([data[0], data[1]]);
+        let trace_minor = u16::from_be_bytes([data[2], data[3]]);
+        let trace_delimiter = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        let data = &data[8..];
+        if trace_delimiter != Self::VERSION_DELIMITER {
+            return Err(flexbuffers::DeserializationError::custom(
+                "Trace data is corrupted, version delimiter is incorrect!",
+            ));
+        }
+        if trace_major != tool_major || trace_minor != tool_minor {
+            return Err(flexbuffers::DeserializationError::custom(format!(
+                "Version mismatch: trace data is v{}.{} but tool is v{}.{}",
+                trace_major, trace_minor, tool_major, tool_minor
+            )));
+        }
+
         let decoded_data = if gzip {
             let mut decoder = flate2::read::GzDecoder::new(data);
             let mut decoded = Vec::new();
