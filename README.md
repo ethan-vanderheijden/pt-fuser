@@ -114,3 +114,7 @@ cargo run --bin convert_perfetto -- --gzip <INPUT_FILE> <OUTPUT_FILE>
 ```
 
 - `--gzip` will uncompress the input file before trying to read it
+
+## Versioning
+
+In our versioning scheme "vX.Y.Z", "X.Y" refers to the version of the trace format. Every time the trace format changes in a backwards-incompatible way, we change "X.Y". If you try to use our tools with a trace file of an incompatible version, you will get a warning message.
