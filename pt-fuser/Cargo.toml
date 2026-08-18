@@ -1,7 +1,8 @@
 [package]
 name = "pt-fuser"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.93.0"
 
 [dependencies]
 clap = { version = "4.6.0", features = ["derive"] }
