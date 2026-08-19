@@ -209,14 +209,14 @@ mod test {
         }
     }
 
-    fn extract_pause_chunk(chunk: &Chunk) -> &MetricsRange {
+    fn extract_pause_chunk<'a>(chunk: &'a Chunk) -> &'a MetricsRange {
         match chunk {
             Chunk::Pause(pause) => pause,
             _ => panic!("Expected pause chunk"),
         }
     }
 
-    fn extract_frame_chunk(chunk: &Chunk) -> &Frame {
+    fn extract_frame_chunk<'a>(chunk: &'a Chunk) -> &'a Frame {
         match chunk {
             Chunk::Frame(frame) => frame,
             _ => panic!("Expected frame chunk"),
@@ -234,7 +234,7 @@ mod test {
         let completed = incomplete
             .complete(SAMPLE_RANGE.end, FrameCompletionOptions::default())
             .unwrap();
-        assert_eq!(completed.chunks().len(), 1);
+        assert_eq!(completed.chunks().count(), 1);
         assert!(completed.check_invariant());
     }
 
@@ -251,7 +251,7 @@ mod test {
         let completed = incomplete
             .complete(SAMPLE_RANGE.end, FrameCompletionOptions::default())
             .unwrap();
-        assert_eq!(completed.chunks().len(), 5);
+        assert_eq!(completed.chunks().count(), 5);
         assert!(completed.check_invariant());
     }
 
@@ -272,11 +272,13 @@ mod test {
         let completed = incomplete
             .complete(SAMPLE_RANGE.end, FrameCompletionOptions::default())
             .unwrap();
-        assert_eq!(completed.chunks().len(), 7);
+
+        let chunks = completed.chunks().collect::<Vec<_>>();
+        assert_eq!(chunks.len(), 7);
         assert!(completed.check_invariant());
-        let _ = extract_pause_chunk(&completed.chunks()[1]);
-        let _ = extract_frame_chunk(&completed.chunks()[3]);
-        let _ = extract_pause_chunk(&completed.chunks()[5]);
+        let _ = extract_pause_chunk(&chunks[1]);
+        let _ = extract_frame_chunk(&chunks[3]);
+        let _ = extract_pause_chunk(&chunks[5]);
     }
 
     #[test]
@@ -309,7 +311,7 @@ mod test {
             .unwrap();
         assert_eq!(completed.symbol.name, "my_func");
         assert_eq!(completed.metrics, SAMPLE_RANGE);
-        assert_eq!(completed.chunks().len(), 1);
+        assert_eq!(completed.chunks().count(), 1);
     }
 
     #[test]
@@ -319,9 +321,9 @@ mod test {
         match result {
             BuilderResult::Completed(trace) => {
                 assert_eq!(trace.root.metrics, SAMPLE_RANGE);
-                assert_eq!(trace.root.chunks().len(), 1);
+                assert_eq!(trace.root.chunks().count(), 1);
                 assert!(matches!(
-                    &trace.root.chunks()[0],
+                    trace.root.chunks().next().unwrap(),
                     trace::Chunk::Straightline(_)
                 ));
             }
@@ -340,48 +342,35 @@ mod test {
         let builder = extract_builder(builder.complete_frame(SAMPLE_RANGE.end, None).unwrap());
         match builder.complete_frame(SAMPLE_RANGE.end, None).unwrap() {
             BuilderResult::Completed(trace) => {
-                assert_eq!(trace.root.chunks().len(), 4);
+                let root_chunks = trace.root.chunks().collect::<Vec<_>>();
+                assert_eq!(root_chunks.len(), 4);
+                assert!(matches!(root_chunks[0], trace::Chunk::Straightline(_)));
+                assert!(matches!(root_chunks[2], trace::Chunk::Straightline(_)));
+
+                let frame1 = extract_frame_chunk(&root_chunks[1]);
+                assert_eq!(frame1.metrics, INNER_RANGE1);
+                assert_eq!(frame1.chunks().count(), 1);
                 assert!(matches!(
-                    &trace.root.chunks()[0],
+                    frame1.chunks().next().unwrap(),
                     trace::Chunk::Straightline(_)
                 ));
+
+                let frame2 = extract_frame_chunk(&root_chunks[3]);
+                assert_eq!(
+                    frame2.metrics,
+                    MetricsRange::new(INNER_RANGE2.start, SAMPLE_RANGE.end)
+                );
+                let frame2_chunks = frame2.chunks().collect::<Vec<_>>();
+                assert_eq!(frame2_chunks.len(), 2);
+                assert!(matches!(frame2_chunks[1], trace::Chunk::Straightline(_)));
+
+                let inner_frame = extract_frame_chunk(&frame2_chunks[0]);
+                assert_eq!(inner_frame.metrics, INNER_RANGE2);
+                assert_eq!(inner_frame.chunks().count(), 1);
                 assert!(matches!(
-                    &trace.root.chunks()[2],
+                    inner_frame.chunks().next().unwrap(),
                     trace::Chunk::Straightline(_)
                 ));
-
-                match &trace.root.chunks()[1] {
-                    trace::Chunk::Frame(frame) => {
-                        assert_eq!(frame.metrics, INNER_RANGE1);
-                        assert_eq!(frame.chunks().len(), 1);
-                        assert!(matches!(&frame.chunks()[0], trace::Chunk::Straightline(_)));
-                    }
-                    _ => panic!("Expected frame chunk in position 1"),
-                }
-
-                match &trace.root.chunks()[3] {
-                    trace::Chunk::Frame(frame) => {
-                        assert_eq!(
-                            frame.metrics,
-                            MetricsRange::new(INNER_RANGE2.start, SAMPLE_RANGE.end)
-                        );
-                        assert_eq!(frame.chunks().len(), 2);
-                        assert!(matches!(&frame.chunks()[1], trace::Chunk::Straightline(_)));
-
-                        match &frame.chunks()[0] {
-                            trace::Chunk::Frame(inner_frame) => {
-                                assert_eq!(inner_frame.metrics, INNER_RANGE2);
-                                assert_eq!(inner_frame.chunks().len(), 1);
-                                assert!(matches!(
-                                    &inner_frame.chunks()[0],
-                                    trace::Chunk::Straightline(_)
-                                ));
-                            }
-                            _ => panic!("Expected frame chunk in nested position 0"),
-                        }
-                    }
-                    _ => panic!("Expected frame chunk in position 3"),
-                }
             }
             BuilderResult::Builder(_) => panic!("Expected trace to be completed"),
         }
@@ -406,27 +395,19 @@ mod test {
         match builder.complete_frame(INNER_RANGE2.end, None).unwrap() {
             BuilderResult::Builder(_) => panic!("Expected completed trace"),
             BuilderResult::Completed(trace) => {
-                assert_eq!(trace.root_frame().chunks().len(), 5);
-                assert!(matches!(
-                    &trace.root_frame().chunks()[0],
-                    trace::Chunk::Straightline(_)
-                ));
-                assert!(matches!(
-                    &trace.root_frame().chunks()[2],
-                    trace::Chunk::Straightline(_)
-                ));
-                assert!(matches!(
-                    &trace.root_frame().chunks()[4],
-                    trace::Chunk::Straightline(_)
-                ));
+                let root_chunks = trace.root_frame().chunks().collect::<Vec<_>>();
+                assert_eq!(root_chunks.len(), 5);
+                assert!(matches!(root_chunks[0], trace::Chunk::Straightline(_)));
+                assert!(matches!(root_chunks[2], trace::Chunk::Straightline(_)));
+                assert!(matches!(root_chunks[4], trace::Chunk::Straightline(_)));
 
-                let pause = extract_pause_chunk(&trace.root_frame().chunks()[1]);
+                let pause = extract_pause_chunk(&root_chunks[1]);
                 assert_eq!(
                     pause,
                     &MetricsRange::new(SAMPLE_RANGE.start + METRICS_ONE, INNER_RANGE1.start)
                 );
 
-                let frame = extract_frame_chunk(&trace.root_frame().chunks()[3]);
+                let frame = extract_frame_chunk(&root_chunks[3]);
                 assert_eq!(
                     frame.metrics,
                     MetricsRange::new(
@@ -434,17 +415,13 @@ mod test {
                         INNER_RANGE2.end - METRICS_ONE
                     )
                 );
-                assert_eq!(frame.chunks().len(), 3);
-                assert!(matches!(
-                    &trace.root_frame().chunks()[0],
-                    trace::Chunk::Straightline(_)
-                ));
-                assert!(matches!(
-                    &trace.root_frame().chunks()[2],
-                    trace::Chunk::Straightline(_)
-                ));
 
-                let nested_pause = extract_pause_chunk(&frame.chunks()[1]);
+                let frame_chunks = frame.chunks().collect::<Vec<_>>();
+                assert_eq!(frame_chunks.len(), 3);
+                assert!(matches!(frame_chunks[0], trace::Chunk::Straightline(_)));
+                assert!(matches!(frame_chunks[2], trace::Chunk::Straightline(_)));
+
+                let nested_pause = extract_pause_chunk(&frame_chunks[1]);
                 assert_eq!(
                     nested_pause,
                     &MetricsRange::new(INNER_RANGE1.end, INNER_RANGE2.start)
@@ -474,26 +451,36 @@ mod test {
         );
         let builder = extract_builder(
             builder
-                .complete_frame(INNER_RANGE1.end, Some(FrameCompletionOptions {
-                    remove_plt_stubs: true,
-                }))
+                .complete_frame(
+                    INNER_RANGE1.end,
+                    Some(FrameCompletionOptions {
+                        remove_plt_stubs: true,
+                    }),
+                )
                 .unwrap(),
         );
         let builder = extract_builder(
             builder
-                .complete_frame(INNER_RANGE1.end, Some(FrameCompletionOptions {
-                    remove_plt_stubs: true,
-                }))
+                .complete_frame(
+                    INNER_RANGE1.end,
+                    Some(FrameCompletionOptions {
+                        remove_plt_stubs: true,
+                    }),
+                )
                 .unwrap(),
         );
         let final_result = builder.complete_frame(SAMPLE_RANGE.end, None).unwrap();
         match final_result {
             BuilderResult::Completed(trace) => {
-                assert_eq!(trace.root_frame().chunks().len(), 3);
-                let frame = extract_frame_chunk(&trace.root_frame().chunks()[1]);
+                let root_chunks = trace.root_frame().chunks().collect::<Vec<_>>();
+                assert_eq!(root_chunks.len(), 3);
+                let frame = extract_frame_chunk(&root_chunks[1]);
                 assert_eq!(frame.symbol.name, "my_func");
-                assert_eq!(frame.metrics, MetricsRange::new(INNER_RANGE1.start, INNER_RANGE1.end));
-                assert_eq!(frame.chunks().len(), 1);
+                assert_eq!(
+                    frame.metrics,
+                    MetricsRange::new(INNER_RANGE1.start, INNER_RANGE1.end)
+                );
+                assert_eq!(frame.chunks().count(), 1);
             }
             BuilderResult::Builder(_) => panic!("Expected trace to be completed"),
         }

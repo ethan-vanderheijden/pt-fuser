@@ -14,7 +14,8 @@ pub struct TraceInterrupted;
 impl TraceInterrupted {
     pub const ID: u32 = 20;
     pub const NAME: &'static str = "Async Interrupts";
-    pub const DESC: &'static str = "Trace was paused while the CPU serviced an asynchronous interrupt.";
+    pub const DESC: &'static str =
+        "Trace was paused while the CPU serviced an asynchronous interrupt.";
 }
 
 pub struct LostFrameWhileMerging;

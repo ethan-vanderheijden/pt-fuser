@@ -10,7 +10,7 @@ where
     P: Fn(&Frame) -> bool,
 {
     curr_frame: &'a Frame,
-    child_index: usize,
+    remaining_chunks: Box<dyn Iterator<Item = Chunk<'a>> + 'a>,
     child_frame_finder: Option<Box<FrameFinder<'a, 'b, P>>>,
     pred: &'b P,
     produced_self: bool,
@@ -23,7 +23,7 @@ where
     pub fn new(root: &'a Frame, pred: &'b P) -> FrameFinder<'a, 'b, P> {
         FrameFinder {
             curr_frame: root,
-            child_index: 0,
+            remaining_chunks: Box::new(root.chunks()),
             child_frame_finder: None,
             pred,
             produced_self: false,
@@ -53,17 +53,17 @@ where
                     self.child_frame_finder = None;
                 }
             }
-            for i in self.child_index..self.curr_frame.chunks().len() {
-                let chunk = &self.curr_frame.chunks()[i];
-                if let Chunk::Frame(frame) = chunk {
-                    self.child_index = i + 1;
-                    self.child_frame_finder = Some(Box::new(FrameFinder::new(frame, self.pred)));
-                    break;
-                }
-            }
 
-            // child frames have been exhausted
-            if self.child_frame_finder.is_none() {
+            let next_chunk = self.remaining_chunks.next();
+            if let Some(next_chunk) = next_chunk {
+                match next_chunk {
+                    Chunk::Frame(frame) => {
+                        self.child_frame_finder =
+                            Some(Box::new(FrameFinder::new(frame, self.pred)));
+                    }
+                    _ => {}
+                }
+            } else {
                 break;
             }
         }

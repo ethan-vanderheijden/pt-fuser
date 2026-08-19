@@ -3,7 +3,7 @@ use std::sync::LazyLock;
 use crate::{
     merge,
     trace::{
-        Annotation, Event, Frame, SymbolInfo, Trace,
+        Annotation, Chunk, Event, Frame, SymbolInfo, Trace,
         metrics::{Metrics, MetricsRange},
     },
 };
@@ -110,6 +110,20 @@ fn extract_ids(frames: &[impl merge::Id]) -> Vec<u32> {
 
 fn seq(xs: &[u32]) -> Vec<TestLCS> {
     xs.iter().map(|x| TestLCS { id: *x }).collect()
+}
+
+fn extract_pause_chunk<'a>(chunk: &'a Chunk) -> &'a MetricsRange {
+    match chunk {
+        Chunk::Pause(pause) => pause,
+        _ => panic!("Expected pause chunk"),
+    }
+}
+
+fn extract_frame_chunk<'a>(chunk: &'a Chunk) -> &'a Frame {
+    match chunk {
+        Chunk::Frame(frame) => frame,
+        _ => panic!("Expected frame chunk"),
+    }
 }
 
 #[test]
@@ -362,18 +376,14 @@ fn merge_traces_common_children() {
         Metrics::constant((90 + 80 + 64) / 3)
     );
 
-    assert_eq!(merged.root_frame().chunks().len(), 5);
-    let child1 = &merged.root_frame().chunks()[1];
-    let child2 = &merged.root_frame().chunks()[3];
-    match (child1, child2) {
-        (merge::Chunk::Frame(child_frame1), merge::Chunk::Frame(child_frame2)) => {
-            assert_eq!(child_frame1.metrics.start, Metrics::constant(15));
-            assert_eq!(child_frame1.metrics.end, Metrics::constant(15 + 20));
-            assert_eq!(child_frame2.metrics.start, Metrics::constant(45));
-            assert_eq!(child_frame2.metrics.end, Metrics::constant(45 + 11));
-        }
-        _ => panic!("Expected children to be framesi"),
-    }
+    let chunks = merged.root_frame().chunks().collect::<Vec<_>>();
+    assert_eq!(chunks.len(), 5);
+    let child_frame1 = extract_frame_chunk(&chunks[1]);
+    let child_frame2 = extract_frame_chunk(&chunks[3]);
+    assert_eq!(child_frame1.metrics.start, Metrics::constant(15));
+    assert_eq!(child_frame1.metrics.end, Metrics::constant(15 + 20));
+    assert_eq!(child_frame2.metrics.start, Metrics::constant(45));
+    assert_eq!(child_frame2.metrics.end, Metrics::constant(45 + 11));
 }
 
 #[test]
@@ -416,28 +426,21 @@ fn merge_frame_frequent_children() {
         &mut Vec::new(),
         0.6,
     );
-    assert_eq!(merged.chunks().len(), 7);
-    let child1 = &merged.chunks()[1];
-    let child2 = &merged.chunks()[3];
-    let child3 = &merged.chunks()[5];
-    match (child1, child2, child3) {
-        (
-            merge::Chunk::Frame(child_frame1),
-            merge::Chunk::Frame(child_frame2),
-            merge::Chunk::Frame(child_frame3),
-        ) => {
-            assert_eq!(child_frame1.metrics.start, Metrics::constant(50 + 12));
-            assert_eq!(child_frame1.metrics.end, Metrics::constant(50 + 12 + 9));
-            assert_eq!(child_frame1.symbol.name, "a");
-            assert_eq!(child_frame2.metrics.start, Metrics::constant(50 + 40));
-            assert_eq!(child_frame2.metrics.end, Metrics::constant(50 + 40 + 1));
-            assert_eq!(child_frame2.symbol.name, "common");
-            assert_eq!(child_frame3.metrics.start, Metrics::constant(50 + 52));
-            assert_eq!(child_frame3.metrics.end, Metrics::constant(50 + 52 + 8));
-            assert_eq!(child_frame3.symbol.name, "b");
-        }
-        _ => panic!("Expected children to be framesi"),
-    }
+
+    let chunks = merged.chunks().collect::<Vec<_>>();
+    assert_eq!(chunks.len(), 7);
+    let child_frame1 = extract_frame_chunk(&chunks[1]);
+    let child_frame2 = extract_frame_chunk(&chunks[3]);
+    let child_frame3 = extract_frame_chunk(&chunks[5]);
+    assert_eq!(child_frame1.metrics.start, Metrics::constant(50 + 12));
+    assert_eq!(child_frame1.metrics.end, Metrics::constant(50 + 12 + 9));
+    assert_eq!(child_frame1.symbol.name, "a");
+    assert_eq!(child_frame2.metrics.start, Metrics::constant(50 + 40));
+    assert_eq!(child_frame2.metrics.end, Metrics::constant(50 + 40 + 1));
+    assert_eq!(child_frame2.symbol.name, "common");
+    assert_eq!(child_frame3.metrics.start, Metrics::constant(50 + 52));
+    assert_eq!(child_frame3.metrics.end, Metrics::constant(50 + 52 + 8));
+    assert_eq!(child_frame3.symbol.name, "b");
 }
 
 #[test]
@@ -482,31 +485,22 @@ fn merge_frame_with_pauses() {
     // result: "a" "[pause]" "[pause]" "c"
     // where the two pause chunks are contiguous
 
-    assert_eq!(merged.chunks().len(), 8);
-    let a = &merged.chunks()[1];
-    let pause1 = &merged.chunks()[3];
-    let pause2 = &merged.chunks()[4];
-    let c = &merged.chunks()[6];
-    match (a, pause1, pause2, c) {
-        (
-            merge::Chunk::Frame(a),
-            merge::Chunk::Pause(pause1),
-            merge::Chunk::Pause(pause2),
-            merge::Chunk::Frame(c),
-        ) => {
-            assert_eq!(a.metrics.start, Metrics::constant(20));
-            assert_eq!(a.metrics.end, Metrics::constant(20 + 15));
-            assert_eq!(a.symbol.name, "a");
-            assert_eq!(pause1.start, Metrics::constant(40));
-            assert_eq!(pause1.end, Metrics::constant(40 + 13));
-            assert_eq!(pause2.start, Metrics::constant(53));
-            assert_eq!(pause2.end, Metrics::constant(53 + 10 - 3));
-            assert_eq!(c.metrics.start, Metrics::constant(115));
-            assert_eq!(c.metrics.end, Metrics::constant(115 + 10));
-            assert_eq!(c.symbol.name, "c");
-        }
-        _ => panic!("Expected children to be a pattern of frames and pauses"),
-    }
+    let chunks = merged.chunks().collect::<Vec<_>>();
+    assert_eq!(chunks.len(), 8);
+    let a = extract_frame_chunk(&chunks[1]);
+    let pause1 = extract_pause_chunk(&chunks[3]);
+    let pause2 = extract_pause_chunk(&chunks[4]);
+    let c = extract_frame_chunk(&chunks[6]);
+    assert_eq!(a.metrics.start, Metrics::constant(20));
+    assert_eq!(a.metrics.end, Metrics::constant(20 + 15));
+    assert_eq!(a.symbol.name, "a");
+    assert_eq!(pause1.start, Metrics::constant(40));
+    assert_eq!(pause1.end, Metrics::constant(40 + 13));
+    assert_eq!(pause2.start, Metrics::constant(53));
+    assert_eq!(pause2.end, Metrics::constant(53 + 10 - 3));
+    assert_eq!(c.metrics.start, Metrics::constant(115));
+    assert_eq!(c.metrics.end, Metrics::constant(115 + 10));
+    assert_eq!(c.symbol.name, "c");
 }
 
 #[test]
@@ -530,7 +524,7 @@ fn merge_frame_with_anotations() {
         .map(|frame| Trace::new(frame.clone(), vec![]))
         .collect::<Vec<_>>();
     let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), None);
-    assert_eq!(merged.root_frame().chunks().len(), 3);
+    assert_eq!(merged.root_frame().chunks().count(), 3);
 
     let root_anotations = &merged.root_frame().annotations;
     let root_stats = match &root_anotations[super::ANNOTATION_STATS_NAME] {
@@ -538,10 +532,8 @@ fn merge_frame_with_anotations() {
         _ => panic!("Expected stats annotation to be a map"),
     };
 
-    let child_anotations = match &merged.root_frame().chunks()[1] {
-        merge::Chunk::Frame(child_frame) => &child_frame.annotations,
-        _ => panic!("Expected child to be a frame"),
-    };
+    let child = merged.root_frame().chunks().nth(1).unwrap();
+    let child_anotations = &extract_frame_chunk(&child).annotations;
     let child_stats = match &child_anotations[super::ANNOTATION_STATS_NAME] {
         Annotation::Map(stats) => stats,
         _ => panic!("Expected stats annotation to be a map"),
@@ -643,42 +635,36 @@ fn merge_traces_export_raw() {
         _ => panic!("Expected root raw data annotation to be a map"),
     }
 
-    match &root_frame.chunks()[0] {
-        merge::Chunk::Frame(child) => {
-            let child_raw_data = child
-                .annotations
-                .get(merge::ANNOTATION_RAW_DATA_NAME)
-                .expect("Child frame should have raw data annotation");
-            match child_raw_data {
-                Annotation::Map(map) => {
-                    assert_eq!(map.get("t1"), Some(&Annotation::Uint64(90)));
-                    assert_eq!(map.get("t2"), Some(&Annotation::Uint64(80)));
-                    assert_eq!(map.get("t3"), Some(&Annotation::Uint64(64)));
-                    assert_eq!(map.get("t4"), Some(&Annotation::Uint64(80)));
-                }
-                _ => panic!("Expected child raw data annotation to be a map"),
-            }
-
-            match &child.chunks()[1] {
-                merge::Chunk::Frame(grandchild) => {
-                    let grandchild_raw_data = grandchild
-                        .annotations
-                        .get(merge::ANNOTATION_RAW_DATA_NAME)
-                        .expect("Grandchild frame should have raw data annotation");
-                    match grandchild_raw_data {
-                        Annotation::Map(map) => {
-                            assert_eq!(map.get("t1"), Some(&Annotation::Uint64(20)));
-                            assert_eq!(map.get("t2"), Some(&Annotation::Uint64(25)));
-                            assert!(!map.contains_key("t3"));
-                            assert_eq!(map.get("t4"), Some(&Annotation::Uint64(50)));
-                        }
-                        _ => panic!("Expected grandchild raw data annotation to be a map"),
-                    }
-                }
-                _ => panic!("Expected grandchild chunk to be a frame"),
-            }
+    let child = root_frame.chunks().next().unwrap();
+    let child = extract_frame_chunk(&child);
+    let child_raw_data = child
+        .annotations
+        .get(merge::ANNOTATION_RAW_DATA_NAME)
+        .expect("Child frame should have raw data annotation");
+    match child_raw_data {
+        Annotation::Map(map) => {
+            assert_eq!(map.get("t1"), Some(&Annotation::Uint64(90)));
+            assert_eq!(map.get("t2"), Some(&Annotation::Uint64(80)));
+            assert_eq!(map.get("t3"), Some(&Annotation::Uint64(64)));
+            assert_eq!(map.get("t4"), Some(&Annotation::Uint64(80)));
         }
-        _ => panic!("Expected first chunk to be a frame"),
+        _ => panic!("Expected child raw data annotation to be a map"),
+    }
+
+    let grandchild = &child.chunks().nth(1).unwrap();
+    let grandchild = extract_frame_chunk(&grandchild);
+    let grandchild_raw_data = grandchild
+        .annotations
+        .get(merge::ANNOTATION_RAW_DATA_NAME)
+        .expect("Grandchild frame should have raw data annotation");
+    match grandchild_raw_data {
+        Annotation::Map(map) => {
+            assert_eq!(map.get("t1"), Some(&Annotation::Uint64(20)));
+            assert_eq!(map.get("t2"), Some(&Annotation::Uint64(25)));
+            assert!(!map.contains_key("t3"));
+            assert_eq!(map.get("t4"), Some(&Annotation::Uint64(50)));
+        }
+        _ => panic!("Expected grandchild raw data annotation to be a map"),
     }
 }
 

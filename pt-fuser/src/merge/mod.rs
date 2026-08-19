@@ -81,7 +81,11 @@ pub fn merge_traces(traces: &[&Trace], raw_trace_ids: Option<&[&str]>) -> Trace 
     if traces.is_empty() {
         panic!("Cannot merge empty list of traces");
     } else if raw_trace_ids.is_some() && raw_trace_ids.unwrap().len() != traces.len() {
-        panic!("Found {} traces but {} trace_ids", traces.len(), raw_trace_ids.unwrap().len());
+        panic!(
+            "Found {} traces but {} trace_ids",
+            traces.len(),
+            raw_trace_ids.unwrap().len()
+        );
     } else if traces.len() == 1 {
         return traces[0].clone();
     }

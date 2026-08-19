@@ -53,14 +53,70 @@ pub enum Annotation {
     Map(IndexMap<String, Annotation>),
 }
 
+struct ChunkIterator<'a, 'b> {
+    curr_metrics: Metrics,
+    ending_metric: &'a Metrics,
+    chunks: &'b [StoredChunk],
+    index: usize,
+}
+
+impl ChunkIterator<'_, '_> {
+    fn new<'a, 'b>(
+        overall_metrics: &'a MetricsRange,
+        chunks: &'b [StoredChunk],
+    ) -> ChunkIterator<'a, 'b> {
+        ChunkIterator {
+            curr_metrics: overall_metrics.start,
+            ending_metric: &overall_metrics.end,
+            chunks,
+            index: 0,
+        }
+    }
+}
+
+impl<'a, 'b> Iterator for ChunkIterator<'a, 'b> {
+    type Item = Chunk<'b>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.chunks.len() {
+            let chunk = &self.chunks[self.index];
+
+            if chunk.metrics().start.ts > self.curr_metrics.ts
+                || chunk.metrics().start.cycles > self.curr_metrics.cycles
+                || chunk.metrics().start.insn_count > self.curr_metrics.insn_count
+            {
+                let straightline = MetricsRange::new(self.curr_metrics, chunk.metrics().start);
+                self.curr_metrics = chunk.metrics().start;
+                return Some(Chunk::Straightline(straightline));
+            } else {
+                self.curr_metrics = chunk.metrics().end;
+                self.index += 1;
+                return Some(chunk.to_chunk());
+            }
+        } else {
+            if self.ending_metric.ts > self.curr_metrics.ts
+                || self.ending_metric.cycles > self.curr_metrics.cycles
+                || self.ending_metric.insn_count > self.curr_metrics.insn_count
+            {
+                let straightline = MetricsRange::new(self.curr_metrics, *self.ending_metric);
+                self.curr_metrics = *self.ending_metric;
+                return Some(Chunk::Straightline(straightline));
+            } else {
+                return None;
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
     pub symbol: SymbolInfo,
     pub metrics: MetricsRange,
     #[serde(with = "indexmap::map::serde_seq")]
     pub annotations: IndexMap<String, Annotation>,
-    // INVARIANT: sum of time, cycles, and insn across all children must equal this frame's time, cycles, and insn
-    chunks: Vec<Chunk>,
+    // To stay memory efficient, only store chunks for Frames, Pauses, etc.
+    // Straightline chunks will be injected on the fly when calling chunks() function
+    chunks: Vec<StoredChunk>,
 }
 
 impl Display for Frame {
@@ -79,44 +135,28 @@ impl Frame {
             symbol,
             metrics,
             annotations: IndexMap::new(),
-            chunks: vec![Chunk::Straightline(metrics)],
+            chunks: vec![],
         }
     }
 
-    pub fn insert_chunk(&mut self, chunk: Chunk) -> Result<(), Error> {
-        for mut i in 0..self.chunks.len() {
-            match self.chunks[i] {
-                Chunk::Straightline(straightline) => {
-                    if straightline.includes_range(&chunk.metrics()) {
-                        if chunk.metrics().start != straightline.start {
-                            let before =
-                                MetricsRange::new(straightline.start, chunk.metrics().start);
-                            self.chunks.insert(i, Chunk::Straightline(before));
-                            i += 1;
-                        }
-                        if chunk.metrics().end != straightline.end {
-                            let after = MetricsRange::new(chunk.metrics().end, straightline.end);
-                            self.chunks.insert(i + 1, Chunk::Straightline(after));
-                        }
-                        self.chunks[i] = chunk;
-                        return Ok(());
-                    }
-                }
-                Chunk::Frame(_) | Chunk::Pause(_) => continue,
+    fn insert_chunk(&mut self, chunk: StoredChunk) -> Result<(), Error> {
+        let mut straightline_start = self.metrics.start;
+        for i in 0..self.chunks.len() {
+            let existing_chunk = &self.chunks[i];
+            let straightline =
+                MetricsRange::new(straightline_start, existing_chunk.metrics().start);
+            if straightline.includes_range(&chunk.metrics()) {
+                self.chunks.insert(i, chunk);
+                return Ok(());
             }
+
+            straightline_start = existing_chunk.metrics().end;
         }
 
-        if chunk.metrics().total_time() == 0
-            && chunk.metrics().total_cycles() == 0
-            && chunk.metrics().total_insn() == 0
-        {
-            if chunk.metrics().start == self.metrics.start {
-                self.chunks.insert(0, chunk);
-                return Ok(());
-            } else if chunk.metrics().end == self.metrics.end {
-                self.chunks.push(chunk);
-                return Ok(());
-            }
+        let straightline = MetricsRange::new(straightline_start, self.metrics.end);
+        if straightline.includes_range(&chunk.metrics()) {
+            self.chunks.push(chunk);
+            return Ok(());
         }
 
         Err(Error::InvalidRange(chunk.metrics().clone()))
@@ -127,14 +167,15 @@ impl Frame {
     }
 
     pub fn add_pause(&mut self, pause: MetricsRange) -> Result<(), Error> {
-        self.insert_chunk(Chunk::Pause(pause))
+        self.insert_chunk(StoredChunk::Pause(pause))
     }
 
     #[inline]
-    pub fn chunks(&self) -> &[Chunk] {
-        &self.chunks
+    pub fn chunks(&'_ self) -> impl Iterator<Item = Chunk<'_>> {
+        ChunkIterator::new(&self.metrics, &self.chunks)
     }
 
+    // INVARIANT: sum of time, cycles, and insn across all children must equal this frame's time, cycles, and insn
     pub fn check_invariant(&self) -> bool {
         let mut total_time = 0;
         let mut total_cycles = 0;
@@ -152,25 +193,47 @@ impl Frame {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Chunk {
+enum StoredChunk {
     Frame(Frame),
-    Straightline(MetricsRange),
     Pause(MetricsRange),
 }
 
-impl Chunk {
-    pub fn metrics(&self) -> &MetricsRange {
+impl StoredChunk {
+    fn metrics(&self) -> &MetricsRange {
         match self {
-            Chunk::Frame(frame) => &frame.metrics,
-            Chunk::Straightline(straightline) => &straightline,
-            Chunk::Pause(pause) => &pause,
+            StoredChunk::Frame(frame) => &frame.metrics,
+            StoredChunk::Pause(pause) => &pause,
+        }
+    }
+
+    fn to_chunk(&'_ self) -> Chunk<'_> {
+        match self {
+            StoredChunk::Frame(frame) => Chunk::Frame(frame),
+            StoredChunk::Pause(pause) => Chunk::Pause(pause),
         }
     }
 }
 
-impl From<Frame> for Chunk {
+impl From<Frame> for StoredChunk {
     fn from(frame: Frame) -> Self {
-        Chunk::Frame(frame)
+        StoredChunk::Frame(frame)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Chunk<'a> {
+    Frame(&'a Frame),
+    Straightline(MetricsRange),
+    Pause(&'a MetricsRange),
+}
+
+impl Chunk<'_> {
+    pub fn metrics(&self) -> MetricsRange {
+        match self {
+            Chunk::Frame(frame) => frame.metrics.clone(),
+            Chunk::Straightline(straightline) => straightline.clone(),
+            Chunk::Pause(pause) => (*pause).clone(),
+        }
     }
 }
 
