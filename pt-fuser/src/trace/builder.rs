@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use bloomfilter::Bloom;
+
 use crate::trace::{self, Event, Frame, Metrics, MetricsRange, SymbolInfo, Trace};
 
 pub struct FrameCompletionOptions {
@@ -24,7 +28,8 @@ struct IncompleteFrame {
     start_metrics: Metrics,
     child_frames: Vec<Frame>,
     pauses: Vec<MetricsRange>,
-    symbol: SymbolInfo,
+    symbol_idx: usize,
+    symbol: Arc<SymbolInfo>,
 }
 
 impl IncompleteFrame {
@@ -45,6 +50,7 @@ impl IncompleteFrame {
 
         let mut completed = Frame::new(
             MetricsRange::new(self.start_metrics, end_metrics),
+            self.symbol_idx,
             self.symbol,
         );
 
@@ -72,6 +78,7 @@ impl IncompleteFrame {
 #[derive(Debug)]
 pub struct TraceBuilder {
     last_metrics: Metrics,
+    symbol_cache: SymbolCache,
     current_frame: IncompleteFrame,
     callstack: Vec<IncompleteFrame>,
     events: Vec<Event>,
@@ -98,13 +105,17 @@ impl TraceBuilder {
     }
 
     pub fn new(start_metrics: Metrics, symbol: SymbolInfo) -> Self {
+        let mut symbol_cache = SymbolCache::new(10000);
+        let sym_idx = symbol_cache.get_or_insert(symbol);
         TraceBuilder {
             last_metrics: start_metrics,
+            symbol_cache: SymbolCache::new(10000),
             current_frame: IncompleteFrame {
                 start_metrics,
                 child_frames: Vec::new(),
                 pauses: Vec::new(),
-                symbol,
+                symbol_idx: sym_idx,
+                symbol: symbol_cache.get_ref(sym_idx),
             },
             callstack: Vec::new(),
             events: Vec::new(),
@@ -113,11 +124,13 @@ impl TraceBuilder {
 
     pub fn push_frame(&mut self, metrics: Metrics, symbol: SymbolInfo) {
         self.ensure_monotonic(metrics);
+        let sym_idx = self.symbol_cache.get_or_insert(symbol);
         let new_frame = IncompleteFrame {
             start_metrics: metrics,
             child_frames: Vec::new(),
             pauses: Vec::new(),
-            symbol,
+            symbol_idx: sym_idx,
+            symbol: self.symbol_cache.get_ref(sym_idx),
         };
         let old_frame = std::mem::replace(&mut self.current_frame, new_frame);
         self.callstack.push(old_frame);
@@ -133,6 +146,7 @@ impl TraceBuilder {
         if self.callstack.is_empty() {
             let completed_frame = self.current_frame.complete(end_metrics, options)?;
             Ok(BuilderResult::Completed(Trace::new(
+                self.symbol_cache.into_symbols(),
                 completed_frame,
                 self.events,
             )))
@@ -194,6 +208,50 @@ pub enum BuilderResult {
     Completed(Trace),
 }
 
+#[derive(Debug)]
+pub struct SymbolCache {
+    symbols: Vec<Arc<SymbolInfo>>,
+    bloom_filter: Bloom<SymbolInfo>,
+}
+
+impl SymbolCache {
+    const FP_RATE: f64 = 0.01;
+
+    pub fn new(estimated_items: usize) -> Self {
+        SymbolCache {
+            symbols: Vec::new(),
+            bloom_filter: Bloom::new_for_fp_rate(estimated_items, Self::FP_RATE).unwrap(),
+        }
+    }
+
+    pub fn get_or_insert(&mut self, symbol: SymbolInfo) -> usize {
+        if self.bloom_filter.check(&symbol) {
+            for (i, existing) in self.symbols.iter().enumerate() {
+                if **existing == symbol {
+                    return i;
+                }
+            }
+        }
+
+        let rc_symbol = Arc::new(symbol);
+        self.symbols.push(rc_symbol.clone());
+        self.bloom_filter.set(&rc_symbol);
+        self.symbols.len() - 1
+    }
+
+    pub fn get_ref(&self, index: usize) -> Arc<SymbolInfo> {
+        self.symbols[index].clone()
+    }
+
+    pub fn size(&self) -> usize {
+        self.symbols.len()
+    }
+
+    pub fn into_symbols(self) -> Vec<Arc<SymbolInfo>> {
+        self.symbols
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -229,6 +287,7 @@ mod test {
             start_metrics: SAMPLE_RANGE.start,
             child_frames: Vec::new(),
             pauses: Vec::new(),
+            symbol_idx: 0,
             symbol: TEST_SYMBOL.clone(),
         };
         let completed = incomplete
@@ -240,12 +299,13 @@ mod test {
 
     #[test]
     fn complete_frame_with_chunks() {
-        let inner1 = Frame::new(INNER_RANGE1, TEST_SYMBOL.clone());
-        let inner2 = Frame::new(INNER_RANGE2, TEST_SYMBOL.clone());
+        let inner1 = Frame::new(INNER_RANGE1, 0, TEST_SYMBOL.clone());
+        let inner2 = Frame::new(INNER_RANGE2, 0, TEST_SYMBOL.clone());
         let incomplete = IncompleteFrame {
             start_metrics: SAMPLE_RANGE.start,
             child_frames: vec![inner1, inner2],
             pauses: Vec::new(),
+            symbol_idx: 0,
             symbol: TEST_SYMBOL.clone(),
         };
         let completed = incomplete
@@ -260,6 +320,7 @@ mod test {
         let pause1 = MetricsRange::new(INNER_RANGE1.start, INNER_RANGE1.start + METRICS_ONE);
         let inner_frame = Frame::new(
             MetricsRange::new(INNER_RANGE1.end - METRICS_ONE, INNER_RANGE1.end),
+            0,
             TEST_SYMBOL.clone(),
         );
         let pause2 = MetricsRange::new(INNER_RANGE2.start, INNER_RANGE2.end);
@@ -267,6 +328,7 @@ mod test {
             start_metrics: SAMPLE_RANGE.start,
             child_frames: vec![inner_frame],
             pauses: vec![pause1, pause2],
+            symbol_idx: 0,
             symbol: TEST_SYMBOL.clone(),
         };
         let completed = incomplete
@@ -285,21 +347,23 @@ mod test {
     fn complete_without_plt_stub() {
         let inner_frame = Frame::new(
             MetricsRange::new(INNER_RANGE1.start, INNER_RANGE1.end),
-            SymbolInfo {
+            0,
+            Arc::new(SymbolInfo {
                 name: "my_func".to_string(),
                 offset: 0,
                 size: 0,
-            },
+            }),
         );
         let incomplete = IncompleteFrame {
             start_metrics: SAMPLE_RANGE.start,
             child_frames: vec![inner_frame],
             pauses: Vec::new(),
-            symbol: SymbolInfo {
+            symbol_idx: 1,
+            symbol: Arc::new(SymbolInfo {
                 name: "my_func@plt".to_string(),
                 offset: 0,
                 size: 0,
-            },
+            }),
         };
         let completed = incomplete
             .complete(
@@ -316,7 +380,7 @@ mod test {
 
     #[test]
     fn build_trace_simple() {
-        let builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
+        let builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.as_ref().clone());
         let result = builder.complete_frame(SAMPLE_RANGE.end, None).unwrap();
         match result {
             BuilderResult::Completed(trace) => {
@@ -333,11 +397,11 @@ mod test {
 
     #[test]
     fn build_trace_nested() {
-        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
-        builder.push_frame(INNER_RANGE1.start, TEST_SYMBOL.clone());
+        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.as_ref().clone());
+        builder.push_frame(INNER_RANGE1.start, TEST_SYMBOL.as_ref().clone());
         let mut builder = extract_builder(builder.complete_frame(INNER_RANGE1.end, None).unwrap());
-        builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone());
-        builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone());
+        builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.as_ref().clone());
+        builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.as_ref().clone());
         let builder = extract_builder(builder.complete_frame(INNER_RANGE2.end, None).unwrap());
         let builder = extract_builder(builder.complete_frame(SAMPLE_RANGE.end, None).unwrap());
         match builder.complete_frame(SAMPLE_RANGE.end, None).unwrap() {
@@ -378,11 +442,14 @@ mod test {
 
     #[test]
     fn build_trace_pauses() {
-        let builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
+        let builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.as_ref().clone());
         let paused = builder.pause(SAMPLE_RANGE.start + METRICS_ONE).unwrap();
         let mut resumed = paused.resume(INNER_RANGE1.start);
 
-        resumed.push_frame(INNER_RANGE1.start + METRICS_ONE, TEST_SYMBOL.clone());
+        resumed.push_frame(
+            INNER_RANGE1.start + METRICS_ONE,
+            TEST_SYMBOL.as_ref().clone(),
+        );
         let paused = resumed.pause(INNER_RANGE1.end).unwrap();
 
         let resumed = paused.resume(INNER_RANGE2.start);
@@ -432,7 +499,7 @@ mod test {
 
     #[test]
     fn build_without_plt_stubs() {
-        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
+        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.as_ref().clone());
         builder.push_frame(
             INNER_RANGE1.start,
             SymbolInfo {
@@ -488,7 +555,7 @@ mod test {
 
     #[test]
     fn add_events() {
-        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
+        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.as_ref().clone());
         builder.new_event(10, "Event 1".to_string(), "Description 1".to_string());
         builder.new_event(20, "Event 2".to_string(), "Description 2".to_string());
 
@@ -546,17 +613,57 @@ mod test {
     }
 
     #[test]
+    fn builder_reuse_symbols() {
+        let sym1 = SymbolInfo {
+            name: "func1".to_string(),
+            offset: 0,
+            size: 0,
+        };
+        let sym2 = SymbolInfo {
+            name: "func2".to_string(),
+            offset: 0,
+            size: 0,
+        };
+        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, sym1.clone());
+        builder.push_frame(INNER_RANGE1.start, sym1.clone());
+        builder.push_frame(INNER_RANGE1.start + METRICS_ONE, sym2.clone());
+        let builder = extract_builder(
+            builder
+                .complete_frame(INNER_RANGE1.end - METRICS_ONE, None)
+                .unwrap(),
+        );
+        let builder = extract_builder(builder.complete_frame(INNER_RANGE1.end, None).unwrap());
+        let final_result = builder.complete_frame(SAMPLE_RANGE.end, None).unwrap();
+        match final_result {
+            BuilderResult::Completed(trace) => {
+                assert_eq!(trace.num_symbols(), 2);
+                assert_eq!(trace.root_frame().symbol.as_ref(), &sym1);
+                let root_chunks = trace.root_frame().chunks().collect::<Vec<_>>();
+                let frame1 = extract_frame_chunk(&root_chunks[1]);
+                assert_eq!(frame1.symbol.as_ref(), &sym1);
+                let frame1_chunks = frame1.chunks().collect::<Vec<_>>();
+                let frame2 = extract_frame_chunk(&frame1_chunks[1]);
+                assert_eq!(frame2.symbol.as_ref(), &sym2);
+            }
+            BuilderResult::Builder(_) => panic!("Expected trace to be completed"),
+        }
+    }
+
+    #[test]
     #[should_panic]
     fn non_monotonic_fails() {
-        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
-        builder.push_frame(SAMPLE_RANGE.start - METRICS_ONE, TEST_SYMBOL.clone());
+        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.as_ref().clone());
+        builder.push_frame(
+            SAMPLE_RANGE.start - METRICS_ONE,
+            TEST_SYMBOL.as_ref().clone(),
+        );
     }
 
     #[test]
     #[should_panic]
     fn non_monotonic_fails3() {
-        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.clone());
-        builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.clone());
+        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.as_ref().clone());
+        builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.as_ref().clone());
         assert!(
             builder
                 .complete_frame(INNER_RANGE2.start - METRICS_ONE, None)

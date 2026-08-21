@@ -5,7 +5,7 @@ pub mod trace_error;
 #[cfg(test)]
 mod test;
 
-use std::{fmt::Display, io::Read};
+use std::{fmt::Display, io::Read, sync::Arc};
 
 use flate2::Compression;
 use flexbuffers::FlexbufferSerializer;
@@ -108,9 +108,11 @@ impl<'a, 'b> Iterator for ChunkIterator<'a, 'b> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Frame {
-    pub symbol: SymbolInfo,
+    pub symbol_idx: usize,
+    #[serde(skip)]
+    pub symbol: Arc<SymbolInfo>,
     pub metrics: MetricsRange,
     #[serde(with = "indexmap::map::serde_seq")]
     pub annotations: IndexMap<String, Annotation>,
@@ -130,8 +132,9 @@ impl Display for Frame {
 }
 
 impl Frame {
-    pub fn new(metrics: MetricsRange, symbol: SymbolInfo) -> Self {
+    pub fn new(metrics: MetricsRange, symbol_idx: usize, symbol: Arc<SymbolInfo>) -> Self {
         Self {
+            symbol_idx,
             symbol,
             metrics,
             annotations: IndexMap::new(),
@@ -192,7 +195,7 @@ impl Frame {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 enum StoredChunk {
     Frame(Frame),
     Pause(MetricsRange),
@@ -283,8 +286,9 @@ impl Event {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Clone)]
 pub struct Trace {
+    symbols: Vec<Arc<SymbolInfo>>,
     root: Frame,
     events: Vec<Event>,
 }
@@ -296,12 +300,20 @@ impl Trace {
     // after that, the actual trace data begins
     const VERSION_DELIMITER: u32 = 0xDEADBEEF;
 
-    pub fn new(root: Frame, events: Vec<Event>) -> Self {
-        Self { root, events }
+    pub fn new(symbols: Vec<Arc<SymbolInfo>>, root: Frame, events: Vec<Event>) -> Self {
+        Self {
+            symbols,
+            root,
+            events,
+        }
     }
 
     pub fn root_frame(&self) -> &Frame {
         &self.root
+    }
+
+    pub fn num_symbols(&self) -> usize {
+        self.symbols.len()
     }
 
     pub fn events(&self) -> &[Event] {
@@ -348,6 +360,77 @@ impl Trace {
         }
     }
 
+    fn deserialize_trace(data: &[u8]) -> Result<Self, flexbuffers::DeserializationError> {
+        // Helper defs that mirror the serialized shape but are deserializable
+        #[derive(Deserialize)]
+        struct TraceDef {
+            symbols: Vec<SymbolInfo>,
+            root: FrameDef,
+            events: Vec<Event>,
+        }
+
+        #[derive(Deserialize)]
+        struct FrameDef {
+            symbol_idx: usize,
+            metrics: MetricsRange,
+            #[serde(with = "indexmap::map::serde_seq")]
+            annotations: IndexMap<String, Annotation>,
+            chunks: Vec<StoredChunkDef>,
+        }
+
+        #[derive(Deserialize)]
+        enum StoredChunkDef {
+            Frame(FrameDef),
+            Pause(MetricsRange),
+        }
+
+        let traces_def: TraceDef = flexbuffers::from_slice(data)?;
+
+        let symbols: Vec<Arc<SymbolInfo>> = traces_def.symbols.into_iter().map(Arc::new).collect();
+
+        fn build_frame(
+            def: FrameDef,
+            symbols: &Vec<Arc<SymbolInfo>>,
+        ) -> Result<Frame, flexbuffers::DeserializationError> {
+            if def.symbol_idx >= symbols.len() {
+                return Err(flexbuffers::DeserializationError::custom(format!(
+                    "Invalid symbol index {} for frame, only {} symbols available",
+                    def.symbol_idx,
+                    symbols.len()
+                )));
+            }
+
+            let symbol_arc = Arc::clone(&symbols[def.symbol_idx]);
+            let frame = Frame {
+                symbol_idx: def.symbol_idx,
+                symbol: symbol_arc,
+                metrics: def.metrics,
+                annotations: def.annotations,
+                chunks: def
+                    .chunks
+                    .into_iter()
+                    .map(|chunk_def| match chunk_def {
+                        StoredChunkDef::Frame(frame_def) => {
+                            let child_frame = build_frame(frame_def, symbols)?;
+                            Ok(StoredChunk::Frame(child_frame))
+                        }
+                        StoredChunkDef::Pause(pause) => Ok(StoredChunk::Pause(pause)),
+                    })
+                    .collect::<Result<_, flexbuffers::DeserializationError>>()?,
+            };
+
+            Ok(frame)
+        }
+
+        let root = build_frame(traces_def.root, &symbols)?;
+
+        Ok(Trace {
+            symbols,
+            root,
+            events: traces_def.events,
+        })
+    }
+
     pub fn bin_deserialize(
         data: &[u8],
         gzip: bool,
@@ -385,7 +468,7 @@ impl Trace {
         } else {
             data.to_vec()
         };
-        flexbuffers::from_slice(&decoded_data)
+        Self::deserialize_trace(&decoded_data)
     }
 }
 

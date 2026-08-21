@@ -1,9 +1,10 @@
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 use crate::{
     merge,
     trace::{
         Annotation, Chunk, Event, Frame, SymbolInfo, Trace,
+        builder::SymbolCache,
         metrics::{Metrics, MetricsRange},
     },
 };
@@ -21,14 +22,25 @@ const DUMMY_RANGE: MetricsRange = MetricsRange {
     },
 };
 
-const DUMMY_SYMBOL: LazyLock<SymbolInfo> = LazyLock::new(|| SymbolInfo {
-    name: "dummy".to_string(),
-    offset: 1,
-    size: 1,
+const DUMMY_SYMBOL: LazyLock<Arc<SymbolInfo>> = LazyLock::new(|| {
+    Arc::new(SymbolInfo {
+        name: "dummy".to_string(),
+        offset: 1,
+        size: 1,
+    })
 });
 
-const DUMMY_FRAME: LazyLock<Frame> =
-    LazyLock::new(|| Frame::new(DUMMY_RANGE, DUMMY_SYMBOL.clone()));
+const SYMBOLS: LazyLock<Vec<Arc<SymbolInfo>>> = LazyLock::new(|| vec![DUMMY_SYMBOL.clone()]);
+
+fn new_frame(range: MetricsRange) -> Frame {
+    Frame::new(range, 0, DUMMY_SYMBOL.clone())
+}
+
+fn new_trace(root: Frame) -> Trace {
+    Trace::new(SYMBOLS.clone(), root, vec![])
+}
+
+const DUMMY_FRAME: LazyLock<Frame> = LazyLock::new(|| new_frame(DUMMY_RANGE));
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct TestLCS {
@@ -49,7 +61,7 @@ impl merge::Id for &TestLCS {
 
 // special symbol called "[pause]" represents a pause chunk
 fn produce_chunks_from_symbols(symbols: &[&str]) -> Frame {
-    let mut frame = Frame::new(DUMMY_RANGE, DUMMY_SYMBOL.clone());
+    let mut frame = new_frame(DUMMY_RANGE);
     for (i, &symbol) in symbols.iter().enumerate() {
         let range = MetricsRange {
             start: Metrics::new(100 + i as u64, 100 + i as u64, 100 + i as u64),
@@ -63,11 +75,12 @@ fn produce_chunks_from_symbols(symbols: &[&str]) -> Frame {
             frame
                 .add_child(Frame::new(
                     range,
-                    SymbolInfo {
+                    0,
+                    Arc::new(SymbolInfo {
                         name: symbol.to_string(),
                         offset: 1,
                         size: 1,
-                    },
+                    }),
                 ))
                 .expect(&format!("Failed to add child '{}' to frame", symbol));
         }
@@ -77,10 +90,10 @@ fn produce_chunks_from_symbols(symbols: &[&str]) -> Frame {
 
 // special symbol called "[pause]" represents a pause chunk
 fn produce_frames_from_metrics(root: (u64, u64), children: &[(u64, u64, Option<&str>)]) -> Frame {
-    let mut frame = Frame::new(
-        MetricsRange::new(Metrics::constant(root.0), Metrics::constant(root.1)),
-        DUMMY_SYMBOL.clone(),
-    );
+    let mut frame = new_frame(MetricsRange::new(
+        Metrics::constant(root.0),
+        Metrics::constant(root.1),
+    ));
     for &(start, end, symbol) in children {
         let range = MetricsRange::new(Metrics::constant(start), Metrics::constant(end));
         if symbol.is_some() && symbol.unwrap() == "[pause]" {
@@ -94,11 +107,14 @@ fn produce_frames_from_metrics(root: (u64, u64), children: &[(u64, u64, Option<&
                     offset: 1,
                     size: 1,
                 })
+                .map(Arc::new)
                 .unwrap_or(DUMMY_SYMBOL.clone());
-            frame.add_child(Frame::new(range, symbol)).expect(&format!(
-                "Failed to add child with range ({}, {}) to frame",
-                start, end
-            ));
+            frame
+                .add_child(Frame::new(range, 0, symbol))
+                .expect(&format!(
+                    "Failed to add child with range ({}, {}) to frame",
+                    start, end
+                ));
         }
     }
     frame
@@ -348,11 +364,11 @@ fn common_slicing_heuristic() {
 #[test]
 fn merge_traces_no_children() {
     let frame1 = produce_frames_from_metrics((500, 590), &[]);
-    let trace1 = Trace::new(frame1, vec![]);
+    let trace1 = new_trace(frame1);
     let frame2 = produce_frames_from_metrics((300, 380), &[]);
-    let trace2 = Trace::new(frame2, vec![]);
+    let trace2 = new_trace(frame2);
     let frame3 = produce_frames_from_metrics((400, 464), &[]);
-    let trace3 = Trace::new(frame3, vec![]);
+    let trace3 = new_trace(frame3);
     let merged = merge::merge_traces(&[&trace1, &trace2, &trace3], None);
     assert_eq!(merged.root_frame().metrics.start, Metrics::constant(0));
     assert_eq!(
@@ -364,11 +380,11 @@ fn merge_traces_no_children() {
 #[test]
 fn merge_traces_common_children() {
     let frame1 = produce_frames_from_metrics((500, 590), &[(520, 540, None), (550, 558, None)]);
-    let trace1 = Trace::new(frame1, vec![]);
+    let trace1 = new_trace(frame1);
     let frame2 = produce_frames_from_metrics((300, 380), &[(310, 335, None), (340, 352, None)]);
-    let trace2 = Trace::new(frame2, vec![]);
+    let trace2 = new_trace(frame2);
     let frame3 = produce_frames_from_metrics((400, 464), &[(415, 430, None), (445, 458, None)]);
-    let trace3 = Trace::new(frame3, vec![]);
+    let trace3 = new_trace(frame3);
     let merged = merge::merge_traces(&[&trace1, &trace2, &trace3], None);
     assert_eq!(merged.root_frame().metrics.start, Metrics::constant(0));
     assert_eq!(
@@ -412,17 +428,16 @@ fn merge_frame_frequent_children() {
             (400, 410, Some("c")),
         ],
     );
-    let mut merged = Frame::new(
-        MetricsRange::new(
-            Metrics::constant(50),
-            Metrics::constant(50 + (90 + 80 + 64) / 3),
-        ),
-        DUMMY_SYMBOL.clone(),
-    );
+    let mut symbol_cache = SymbolCache::new(10);
+    let mut merged = new_frame(MetricsRange::new(
+        Metrics::constant(50),
+        Metrics::constant(50 + (90 + 80 + 64) / 3),
+    ));
     merge::merge_children(
         &mut merged,
         &[&frame1, &frame2, &frame3],
         None,
+        &mut symbol_cache,
         &mut Vec::new(),
         0.6,
     );
@@ -471,14 +486,16 @@ fn merge_frame_with_pauses() {
             (250, 260, Some("c")),
         ],
     );
-    let mut merged = Frame::new(
-        MetricsRange::new(Metrics::constant(0), Metrics::constant(133)),
-        DUMMY_SYMBOL.clone(),
-    );
+    let mut symbol_cache = SymbolCache::new(10);
+    let mut merged = new_frame(MetricsRange::new(
+        Metrics::constant(0),
+        Metrics::constant(133),
+    ));
     merge::merge_children(
         &mut merged,
         &[&frame1, &frame2, &frame3],
         None,
+        &mut symbol_cache,
         &mut Vec::new(),
         0.6,
     );
@@ -521,7 +538,7 @@ fn merge_frame_with_anotations() {
     ];
     let traces = root_frames
         .iter()
-        .map(|frame| Trace::new(frame.clone(), vec![]))
+        .map(|frame| new_trace(frame.clone()))
         .collect::<Vec<_>>();
     let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), None);
     assert_eq!(merged.root_frame().chunks().count(), 3);
@@ -585,36 +602,36 @@ fn merge_frame_with_anotations() {
 #[test]
 fn merge_traces_export_raw() {
     let frame1 = produce_frames_from_metrics((500, 590), &[(520, 540, Some("a"))]);
-    let mut root1 = Frame::new(
-        MetricsRange::new(Metrics::constant(500), Metrics::constant(600)),
-        DUMMY_SYMBOL.clone(),
-    );
+    let mut root1 = new_frame(MetricsRange::new(
+        Metrics::constant(500),
+        Metrics::constant(600),
+    ));
     root1.add_child(frame1).unwrap();
-    let trace1 = Trace::new(root1, vec![]);
+    let trace1 = new_trace(root1);
 
     let frame2 = produce_frames_from_metrics((300, 380), &[(310, 335, Some("a"))]);
-    let mut root2 = Frame::new(
-        MetricsRange::new(Metrics::constant(300), Metrics::constant(400)),
-        DUMMY_SYMBOL.clone(),
-    );
+    let mut root2 = new_frame(MetricsRange::new(
+        Metrics::constant(300),
+        Metrics::constant(400),
+    ));
     root2.add_child(frame2).unwrap();
-    let trace2 = Trace::new(root2, vec![]);
+    let trace2 = new_trace(root2);
 
     let frame3 = produce_frames_from_metrics((400, 464), &[]);
-    let mut root3 = Frame::new(
-        MetricsRange::new(Metrics::constant(400), Metrics::constant(500)),
-        DUMMY_SYMBOL.clone(),
-    );
+    let mut root3 = new_frame(MetricsRange::new(
+        Metrics::constant(400),
+        Metrics::constant(500),
+    ));
     root3.add_child(frame3).unwrap();
-    let trace3 = Trace::new(root3, vec![]);
+    let trace3 = new_trace(root3);
 
     let frame4 = produce_frames_from_metrics((0, 80), &[(10, 60, Some("a"))]);
-    let mut root4 = Frame::new(
-        MetricsRange::new(Metrics::constant(0), Metrics::constant(100)),
-        DUMMY_SYMBOL.clone(),
-    );
+    let mut root4 = new_frame(MetricsRange::new(
+        Metrics::constant(0),
+        Metrics::constant(100),
+    ));
     root4.add_child(frame4).unwrap();
-    let trace4 = Trace::new(root4, vec![]);
+    let trace4 = new_trace(root4);
 
     let merged = merge::merge_traces(
         &[&trace1, &trace2, &trace3, &trace4],
@@ -683,9 +700,17 @@ fn merge_events_simple() {
     let mut event_c1 = Event::new(3, "C".to_string(), "Desc".to_string());
     event_c1.add_occurence(Metrics::constant(140));
 
-    let trace1 = Trace::new(DUMMY_FRAME.clone(), vec![event_a1]);
-    let trace2 = Trace::new(DUMMY_FRAME.clone(), vec![event_a2, event_b1]);
-    let trace3 = Trace::new(DUMMY_FRAME.clone(), vec![event_b2, event_c1]);
+    let trace1 = Trace::new(SYMBOLS.clone(), DUMMY_FRAME.clone(), vec![event_a1]);
+    let trace2 = Trace::new(
+        SYMBOLS.clone(),
+        DUMMY_FRAME.clone(),
+        vec![event_a2, event_b1],
+    );
+    let trace3 = Trace::new(
+        SYMBOLS.clone(),
+        DUMMY_FRAME.clone(),
+        vec![event_b2, event_c1],
+    );
     let merged_events = merge::merge_events(&[&trace1, &trace2, &trace3], &DUMMY_RANGE);
     assert_eq!(merged_events.len(), 3);
 
@@ -723,17 +748,19 @@ fn merge_events_scaling() {
     event_b.add_occurence(Metrics::constant(405));
 
     let trace1 = Trace::new(
-        Frame::new(
-            MetricsRange::new(Metrics::constant(250), Metrics::constant(500)),
-            DUMMY_SYMBOL.clone(),
-        ),
+        SYMBOLS.clone(),
+        new_frame(MetricsRange::new(
+            Metrics::constant(250),
+            Metrics::constant(500),
+        )),
         vec![event_a],
     );
     let trace2 = Trace::new(
-        Frame::new(
-            MetricsRange::new(Metrics::constant(325), Metrics::constant(425)),
-            DUMMY_SYMBOL.clone(),
-        ),
+        SYMBOLS.clone(),
+        new_frame(MetricsRange::new(
+            Metrics::constant(325),
+            Metrics::constant(425),
+        )),
         vec![event_b],
     );
     let merged_events = merge::merge_events(
@@ -771,17 +798,19 @@ fn merge_events_zipped_scaled() {
     event_a2.add_occurence(Metrics::constant(405));
 
     let trace1 = Trace::new(
-        Frame::new(
-            MetricsRange::new(Metrics::constant(250), Metrics::constant(500)),
-            DUMMY_SYMBOL.clone(),
-        ),
+        SYMBOLS.clone(),
+        new_frame(MetricsRange::new(
+            Metrics::constant(250),
+            Metrics::constant(500),
+        )),
         vec![event_a1],
     );
     let trace2 = Trace::new(
-        Frame::new(
-            MetricsRange::new(Metrics::constant(325), Metrics::constant(425)),
-            DUMMY_SYMBOL.clone(),
-        ),
+        SYMBOLS.clone(),
+        new_frame(MetricsRange::new(
+            Metrics::constant(325),
+            Metrics::constant(425),
+        )),
         vec![event_a2],
     );
     let merged_events = merge::merge_events(

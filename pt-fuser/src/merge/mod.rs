@@ -13,6 +13,7 @@ use crate::{
     analysis::Stats,
     trace::{
         Annotation, Chunk, Event, Frame, Trace,
+        builder::SymbolCache,
         metrics::{Metrics, MetricsRange},
         trace_error,
     },
@@ -97,6 +98,9 @@ pub fn merge_traces(traces: &[&Trace], raw_trace_ids: Option<&[&str]>) -> Trace 
 
     info!("Merging frames for {} traces...", traces.len());
 
+    let mut symbol_cache = SymbolCache::new(traces[0].num_symbols());
+    let root_idx = symbol_cache.get_or_insert((*frames[0].symbol).clone());
+
     let latencies = frames
         .iter()
         .map(|f| f.metrics.end - f.metrics.start)
@@ -104,7 +108,8 @@ pub fn merge_traces(traces: &[&Trace], raw_trace_ids: Option<&[&str]>) -> Trace 
     let new_end = latencies.iter().sum::<Metrics>() / (frames.len() as u64);
     let mut new_root = Frame::new(
         MetricsRange::new(Metrics::constant(0), new_end),
-        traces[0].root_frame().symbol.clone(),
+        root_idx,
+        symbol_cache.get_ref(root_idx),
     );
 
     fill_annotations(&mut new_root, &latencies, raw_trace_ids);
@@ -114,6 +119,7 @@ pub fn merge_traces(traces: &[&Trace], raw_trace_ids: Option<&[&str]>) -> Trace 
         &mut new_root,
         &frames,
         raw_trace_ids,
+        &mut symbol_cache,
         &mut lost_frame_occurences,
         FREQUENT_FRAME_THRESH,
     );
@@ -132,7 +138,7 @@ pub fn merge_traces(traces: &[&Trace], raw_trace_ids: Option<&[&str]>) -> Trace 
         merged_events.push(lost_frame_event);
     }
 
-    Trace::new(new_root, merged_events)
+    Trace::new(symbol_cache.into_symbols(), new_root, merged_events)
 }
 
 trait Id: Clone {
@@ -453,6 +459,7 @@ fn merge_children(
     new_parent: &mut Frame,
     frames: &[&Frame],
     raw_trace_ids: Option<&[&str]>, // parallel list to frames
+    symbol_cache: &mut SymbolCache,
     lost_frame_occurrences: &mut Vec<Metrics>,
     frequent_thresh: f32,
 ) {
@@ -517,13 +524,17 @@ fn merge_children(
                         })
                         .collect::<Vec<&Frame>>();
 
-                    let mut merged_child =
-                        Frame::new(new_child_range, first_frame.original.symbol.clone());
+                    let symbol = (*first_frame.original.symbol).clone();
+                    let symbol_idx = symbol_cache.get_or_insert(symbol);
+                    let symbol_rc = symbol_cache.get_ref(symbol_idx);
+
+                    let mut merged_child = Frame::new(new_child_range, symbol_idx, symbol_rc);
                     let active_trace_ids_slice = active_trace_ids.as_ref().map(|v| v.as_slice());
                     merge_children(
                         &mut merged_child,
                         &children,
                         active_trace_ids_slice,
+                        symbol_cache,
                         lost_frame_occurrences,
                         frequent_thresh,
                     );
