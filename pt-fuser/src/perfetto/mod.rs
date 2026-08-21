@@ -119,7 +119,7 @@ fn create_event(timestamp: u64, event_id: u32) -> TracePacket {
 
 struct StackFrame {
     iid: u64,
-    annotations: Vec<DebugAnnotation>,
+    annotations: Option<Vec<DebugAnnotation>>,
 }
 
 struct Converter {
@@ -254,13 +254,15 @@ impl Converter {
             }];
         }
 
-        let annotations = self.convert_annotation_map(&frame.annotations, &mut intern_data);
+        let annotations = frame.annotations.as_ref().map(|a| {
+            self.convert_annotation_map(a, &mut intern_data)
+        });
         let mut slice_begin = create_slice_begin(
             frame.metrics.start.ts,
             TRACE_SEQUENCE_ID,
             TRACE_TRACK_ID,
             NameField::NameIid(iid),
-            Some(annotations.clone()),
+            annotations.clone(),
         );
         slice_begin.interned_data = Some(intern_data);
         packets.push(slice_begin);
@@ -284,14 +286,14 @@ impl Converter {
 
                     // previous stack frames resume once pause is over
                     // in Perfetto, this appears as a blank gap, indicating that tracing was paused
-                    let resume = metrics.end.ts;
+                    let resume = metrics.end().ts;
                     for stack_frame in stack_iid.iter() {
                         let slice_begin = create_slice_begin(
                             resume,
                             TRACE_SEQUENCE_ID,
                             TRACE_TRACK_ID,
                             NameField::NameIid(stack_frame.iid),
-                            Some(stack_frame.annotations.clone()),
+                            stack_frame.annotations.clone(),
                         );
                         packets.push(slice_begin);
                     }
@@ -301,7 +303,7 @@ impl Converter {
 
         stack_iid.pop();
 
-        let slice_end = create_slice_end(frame.metrics.end.ts, TRACE_SEQUENCE_ID, TRACE_TRACK_ID);
+        let slice_end = create_slice_end(frame.metrics.end().ts, TRACE_SEQUENCE_ID, TRACE_TRACK_ID);
         packets.push(slice_end);
 
         packets
@@ -330,7 +332,7 @@ pub fn convert_to_perfetto(trace: &Trace) -> Vec<u8> {
         None,
     ));
     packets.push(create_slice_end(
-        trace.root_frame().metrics.end.ts,
+        trace.root_frame().metrics.end().ts,
         GLOBAL_SEQUENCE_ID,
         GLOBAL_TRACK_ID,
     ));

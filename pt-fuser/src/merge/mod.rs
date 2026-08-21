@@ -103,11 +103,11 @@ pub fn merge_traces(traces: &[&Trace], raw_trace_ids: Option<&[&str]>) -> Trace 
 
     let latencies = frames
         .iter()
-        .map(|f| f.metrics.end - f.metrics.start)
+        .map(|f| f.metrics.end() - f.metrics.start)
         .collect::<Vec<_>>();
     let new_end = latencies.iter().sum::<Metrics>() / (frames.len() as u64);
     let mut new_root = Frame::new(
-        MetricsRange::new(Metrics::constant(0), new_end),
+        MetricsRange::new(Metrics::constant(0), &new_end),
         root_idx,
         symbol_cache.get_ref(root_idx),
     );
@@ -401,7 +401,9 @@ fn find_frequent_children<I: Id>(
 }
 
 fn fill_annotations(frame: &mut Frame, latencies: &[Metrics], trace_ids: Option<&[&str]>) {
-    frame.annotations.insert(
+    // since `frame` should be newly created, we assume annotations is None
+    let mut annotations = IndexMap::new();
+    annotations.insert(
         ANNOTATION_COUNT_NAME.to_string(),
         Annotation::Uint64(latencies.len() as u64),
     );
@@ -411,9 +413,7 @@ fn fill_annotations(frame: &mut Frame, latencies: &[Metrics], trace_ids: Option<
             .into_iter()
             .map(|(k, v)| (k, Annotation::Double(v)))
             .collect::<IndexMap<String, Annotation>>();
-        frame
-            .annotations
-            .insert(ANNOTATION_STATS_NAME.to_string(), Annotation::Map(stats));
+        annotations.insert(ANNOTATION_STATS_NAME.to_string(), Annotation::Map(stats));
     }
 
     if let Some(ids) = trace_ids {
@@ -426,11 +426,13 @@ fn fill_annotations(frame: &mut Frame, latencies: &[Metrics], trace_ids: Option<
         let raw_data_map = raw_data
             .into_iter()
             .collect::<IndexMap<String, Annotation>>();
-        frame.annotations.insert(
+        annotations.insert(
             ANNOTATION_RAW_DATA_NAME.to_string(),
             Annotation::Map(raw_data_map),
         );
     }
+
+    frame.annotations = Some(Box::new(annotations));
 }
 
 fn constrain_metrics(
@@ -438,18 +440,21 @@ fn constrain_metrics(
     min_metrics: &Metrics,
     max_metrics: &Metrics,
 ) -> Option<MetricsRange> {
-    let mut result = target.clone();
-    result.start.ts = max(result.start.ts, min_metrics.ts);
-    result.start.cycles = max(result.start.cycles, min_metrics.cycles);
-    result.start.insn_count = max(result.start.insn_count, min_metrics.insn_count);
-    result.end.ts = min(result.end.ts, max_metrics.ts);
-    result.end.cycles = min(result.end.cycles, max_metrics.cycles);
-    result.end.insn_count = min(result.end.insn_count, max_metrics.insn_count);
-    if result.start.ts <= result.end.ts
-        && result.start.cycles <= result.end.cycles
-        && result.start.insn_count <= result.end.insn_count
+    let mut start = target.start;
+    start.ts = max(start.ts, min_metrics.ts);
+    start.cycles = max(start.cycles, min_metrics.cycles);
+    start.insn_count = max(start.insn_count, min_metrics.insn_count);
+
+    let mut end = target.end();
+    end.ts = min(end.ts, max_metrics.ts);
+    end.cycles = min(end.cycles, max_metrics.cycles);
+    end.insn_count = min(end.insn_count, max_metrics.insn_count);
+
+    if start.ts <= end.ts
+        && start.cycles <= end.cycles
+        && start.insn_count <= end.insn_count
     {
-        Some(result)
+        return Some(MetricsRange::new(start, &end));
     } else {
         None
     }
@@ -464,7 +469,7 @@ fn merge_children(
     frequent_thresh: f32,
 ) {
     let mut min_metrics = new_parent.metrics.start;
-    let max_metrics = new_parent.metrics.end;
+    let max_metrics = new_parent.metrics.end();
 
     let (n, indexed_children) = index_children(frames, raw_trace_ids);
     let mut sequences = indexed_children
@@ -483,15 +488,15 @@ fn merge_children(
 
         let latencies = children
             .iter()
-            .map(|f| f.metrics().end - f.metrics().start)
+            .map(|f| f.metrics().end() - f.metrics().start)
             .collect::<Vec<_>>();
         let new_end = new_start + latencies.iter().sum::<Metrics>() / (children.len() as u64);
 
-        let new_child_range = MetricsRange::new(new_start, new_end);
+        let new_child_range = MetricsRange::new(new_start, &new_end);
         if let Some(new_child_range) =
             constrain_metrics(&new_child_range, &min_metrics, &max_metrics)
         {
-            min_metrics = new_child_range.end;
+            min_metrics = new_child_range.end();
 
             match children.first().unwrap() {
                 IndexedChild::Frame(first_frame) => {
@@ -627,7 +632,7 @@ fn zip_events(
 }
 
 fn merge_events(traces: &[&Trace], new_range: &MetricsRange) -> Vec<Event> {
-    let new_range_len = new_range.end - new_range.start;
+    let new_range_len = new_range.end() - new_range.start;
     let mut events = Vec::new();
     let mut seen_ids = HashSet::new();
     for &trace in traces {
@@ -641,7 +646,7 @@ fn merge_events(traces: &[&Trace], new_range: &MetricsRange) -> Vec<Event> {
                         trace.events().iter().find_map(|e| {
                             if e.id == event.id {
                                 let trace_start = trace.root_frame().metrics.start;
-                                let trace_range = trace.root_frame().metrics.end - trace_start;
+                                let trace_range = trace.root_frame().metrics.end() - trace_start;
                                 // scale each occurence so it is within new_range
                                 Some(e.occurences().iter().map(move |o| {
                                     new_range_len * (o - &trace_start) / trace_range

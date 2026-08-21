@@ -11,8 +11,40 @@ use flate2::Compression;
 use flexbuffers::FlexbufferSerializer;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize, de::Error as DeError, ser::Error as SerError};
+use thin_vec::ThinVec;
 
 use crate::trace::metrics::{Metrics, MetricsRange};
+
+mod ordered_annotations_serde {
+    use super::*;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(
+        value: &Option<Box<IndexMap<String, Annotation>>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(annotations) => indexmap::map::serde_seq::serialize(annotations, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<Option<Box<IndexMap<String, Annotation>>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SeqWrapper(#[serde(with = "indexmap::map::serde_seq")] IndexMap<String, Annotation>);
+
+        let opt = Option::<SeqWrapper>::deserialize(deserializer)?;
+        Ok(opt.map(|wrapper| Box::new(wrapper.0)))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SymbolInfo {
@@ -53,29 +85,26 @@ pub enum Annotation {
     Map(IndexMap<String, Annotation>),
 }
 
-struct ChunkIterator<'a, 'b> {
+struct ChunkIterator<'a> {
     curr_metrics: Metrics,
-    ending_metric: &'a Metrics,
-    chunks: &'b [StoredChunk],
+    ending_metric: Metrics,
+    chunks: &'a [StoredChunk],
     index: usize,
 }
 
-impl ChunkIterator<'_, '_> {
-    fn new<'a, 'b>(
-        overall_metrics: &'a MetricsRange,
-        chunks: &'b [StoredChunk],
-    ) -> ChunkIterator<'a, 'b> {
+impl ChunkIterator<'_> {
+    fn new<'a>(overall_metrics: &MetricsRange, chunks: &'a [StoredChunk]) -> ChunkIterator<'a> {
         ChunkIterator {
             curr_metrics: overall_metrics.start,
-            ending_metric: &overall_metrics.end,
+            ending_metric: overall_metrics.end(),
             chunks,
             index: 0,
         }
     }
 }
 
-impl<'a, 'b> Iterator for ChunkIterator<'a, 'b> {
-    type Item = Chunk<'b>;
+impl<'a> Iterator for ChunkIterator<'a> {
+    type Item = Chunk<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.index < self.chunks.len() {
@@ -85,11 +114,11 @@ impl<'a, 'b> Iterator for ChunkIterator<'a, 'b> {
                 || chunk.metrics().start.cycles > self.curr_metrics.cycles
                 || chunk.metrics().start.insn_count > self.curr_metrics.insn_count
             {
-                let straightline = MetricsRange::new(self.curr_metrics, chunk.metrics().start);
+                let straightline = MetricsRange::new(self.curr_metrics, &chunk.metrics().start);
                 self.curr_metrics = chunk.metrics().start;
                 return Some(Chunk::Straightline(straightline));
             } else {
-                self.curr_metrics = chunk.metrics().end;
+                self.curr_metrics = chunk.metrics().end();
                 self.index += 1;
                 return Some(chunk.to_chunk());
             }
@@ -98,8 +127,8 @@ impl<'a, 'b> Iterator for ChunkIterator<'a, 'b> {
                 || self.ending_metric.cycles > self.curr_metrics.cycles
                 || self.ending_metric.insn_count > self.curr_metrics.insn_count
             {
-                let straightline = MetricsRange::new(self.curr_metrics, *self.ending_metric);
-                self.curr_metrics = *self.ending_metric;
+                let straightline = MetricsRange::new(self.curr_metrics, &self.ending_metric);
+                self.curr_metrics = self.ending_metric;
                 return Some(Chunk::Straightline(straightline));
             } else {
                 return None;
@@ -114,11 +143,11 @@ pub struct Frame {
     #[serde(skip)]
     pub symbol: Arc<SymbolInfo>,
     pub metrics: MetricsRange,
-    #[serde(with = "indexmap::map::serde_seq")]
-    pub annotations: IndexMap<String, Annotation>,
+    #[serde(with = "ordered_annotations_serde")]
+    pub annotations: Option<Box<IndexMap<String, Annotation>>>,
     // To stay memory efficient, only store chunks for Frames, Pauses, etc.
     // Straightline chunks will be injected on the fly when calling chunks() function
-    chunks: Vec<StoredChunk>,
+    chunks: ThinVec<StoredChunk>,
 }
 
 impl Display for Frame {
@@ -126,7 +155,9 @@ impl Display for Frame {
         write!(
             f,
             "{} ({} - {})",
-            self.symbol, self.metrics.start, self.metrics.end
+            self.symbol,
+            self.metrics.start,
+            self.metrics.end()
         )
     }
 }
@@ -137,32 +168,41 @@ impl Frame {
             symbol_idx,
             symbol,
             metrics,
-            annotations: IndexMap::new(),
-            chunks: vec![],
+            annotations: None,
+            chunks: ThinVec::new(),
         }
     }
 
     fn insert_chunk(&mut self, chunk: StoredChunk) -> Result<(), Error> {
-        let mut straightline_start = self.metrics.start;
-        for i in 0..self.chunks.len() {
+        // Iterate backwards through existing chunks
+        // that way, inserting chunks in chronological order is O(n)
+        let chunk_end = chunk.metrics().end();
+        let mut straightline_end = self.metrics.end();
+        for i in (0..self.chunks.len()).rev() {
+            if straightline_end.ts < chunk_end.ts
+                || straightline_end.cycles < chunk_end.cycles
+                || straightline_end.insn_count < chunk_end.insn_count
+            {
+                return Err(Error::InvalidRange(chunk.metrics().clone()));
+            }
+
             let existing_chunk = &self.chunks[i];
-            let straightline =
-                MetricsRange::new(straightline_start, existing_chunk.metrics().start);
-            if straightline.includes_range(&chunk.metrics()) {
-                self.chunks.insert(i, chunk);
+            let straightline = MetricsRange::new(existing_chunk.metrics().end(), &straightline_end);
+            if straightline.includes_range(chunk.metrics()) {
+                self.chunks.insert(i + 1, chunk);
                 return Ok(());
             }
 
-            straightline_start = existing_chunk.metrics().end;
+            straightline_end = existing_chunk.metrics().start;
         }
 
-        let straightline = MetricsRange::new(straightline_start, self.metrics.end);
-        if straightline.includes_range(&chunk.metrics()) {
-            self.chunks.push(chunk);
+        let straightline = MetricsRange::new(self.metrics.start, &straightline_end);
+        if straightline.includes_range(chunk.metrics()) {
+            self.chunks.insert(0, chunk);
             return Ok(());
         }
 
-        Err(Error::InvalidRange(chunk.metrics().clone()))
+        return Err(Error::InvalidRange(chunk.metrics().clone()));
     }
 
     pub fn add_child(&mut self, child: Frame) -> Result<(), Error> {
@@ -373,9 +413,9 @@ impl Trace {
         struct FrameDef {
             symbol_idx: usize,
             metrics: MetricsRange,
-            #[serde(with = "indexmap::map::serde_seq")]
-            annotations: IndexMap<String, Annotation>,
-            chunks: Vec<StoredChunkDef>,
+            #[serde(with = "ordered_annotations_serde")]
+            annotations: Option<Box<IndexMap<String, Annotation>>>,
+            chunks: ThinVec<StoredChunkDef>,
         }
 
         #[derive(Deserialize)]

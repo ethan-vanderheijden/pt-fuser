@@ -67,7 +67,7 @@ fn add_histogram_datapoint<'a>(
             let mut error_index = 0;
             let mut num_errors = 0;
             for frame in frames {
-                while error_index < errors.len() && errors[error_index] < frame.metrics.end {
+                while error_index < errors.len() && errors[error_index] < frame.metrics.end() {
                     if errors[error_index] >= frame.metrics.start {
                         num_errors += 1;
                     }

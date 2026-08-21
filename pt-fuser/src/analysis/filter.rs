@@ -114,7 +114,7 @@ impl FromStr for Filter {
 fn scan_event(event: &Event, cur_index: &mut usize, metric_range: &MetricsRange) -> u32 {
     let mut count = 0;
     let occurences = event.occurences();
-    while *cur_index < occurences.len() && occurences[*cur_index] < metric_range.end {
+    while *cur_index < occurences.len() && occurences[*cur_index] < metric_range.end() {
         if occurences[*cur_index] >= metric_range.start {
             count += 1;
         }

@@ -9,18 +9,19 @@ use crate::{
     },
 };
 
-const DUMMY_RANGE: MetricsRange = MetricsRange {
-    start: Metrics {
+const DUMMY_RANGE_END: Metrics = Metrics {
+    ts: 200,
+    cycles: 200,
+    insn_count: 200,
+};
+const DUMMY_RANGE: MetricsRange = MetricsRange::new(
+    Metrics {
         ts: 100,
         cycles: 100,
         insn_count: 100,
     },
-    end: Metrics {
-        ts: 200,
-        cycles: 200,
-        insn_count: 200,
-    },
-};
+    &DUMMY_RANGE_END,
+);
 
 const DUMMY_SYMBOL: LazyLock<Arc<SymbolInfo>> = LazyLock::new(|| {
     Arc::new(SymbolInfo {
@@ -63,10 +64,10 @@ impl merge::Id for &TestLCS {
 fn produce_chunks_from_symbols(symbols: &[&str]) -> Frame {
     let mut frame = new_frame(DUMMY_RANGE);
     for (i, &symbol) in symbols.iter().enumerate() {
-        let range = MetricsRange {
-            start: Metrics::new(100 + i as u64, 100 + i as u64, 100 + i as u64),
-            end: Metrics::new(101 + i as u64, 101 + i as u64, 101 + i as u64),
-        };
+        let range = MetricsRange::new(
+            Metrics::new(100 + i as u64, 100 + i as u64, 100 + i as u64),
+            &Metrics::new(101 + i as u64, 101 + i as u64, 101 + i as u64),
+        );
         if symbol == "[pause]" {
             frame
                 .add_pause(range)
@@ -92,10 +93,10 @@ fn produce_chunks_from_symbols(symbols: &[&str]) -> Frame {
 fn produce_frames_from_metrics(root: (u64, u64), children: &[(u64, u64, Option<&str>)]) -> Frame {
     let mut frame = new_frame(MetricsRange::new(
         Metrics::constant(root.0),
-        Metrics::constant(root.1),
+        &Metrics::constant(root.1),
     ));
     for &(start, end, symbol) in children {
-        let range = MetricsRange::new(Metrics::constant(start), Metrics::constant(end));
+        let range = MetricsRange::new(Metrics::constant(start), &Metrics::constant(end));
         if symbol.is_some() && symbol.unwrap() == "[pause]" {
             frame
                 .add_pause(range)
@@ -372,7 +373,7 @@ fn merge_traces_no_children() {
     let merged = merge::merge_traces(&[&trace1, &trace2, &trace3], None);
     assert_eq!(merged.root_frame().metrics.start, Metrics::constant(0));
     assert_eq!(
-        merged.root_frame().metrics.end,
+        merged.root_frame().metrics.end(),
         Metrics::constant((90 + 80 + 64) / 3)
     );
 }
@@ -388,7 +389,7 @@ fn merge_traces_common_children() {
     let merged = merge::merge_traces(&[&trace1, &trace2, &trace3], None);
     assert_eq!(merged.root_frame().metrics.start, Metrics::constant(0));
     assert_eq!(
-        merged.root_frame().metrics.end,
+        merged.root_frame().metrics.end(),
         Metrics::constant((90 + 80 + 64) / 3)
     );
 
@@ -397,9 +398,9 @@ fn merge_traces_common_children() {
     let child_frame1 = extract_frame_chunk(&chunks[1]);
     let child_frame2 = extract_frame_chunk(&chunks[3]);
     assert_eq!(child_frame1.metrics.start, Metrics::constant(15));
-    assert_eq!(child_frame1.metrics.end, Metrics::constant(15 + 20));
+    assert_eq!(child_frame1.metrics.end(), Metrics::constant(15 + 20));
     assert_eq!(child_frame2.metrics.start, Metrics::constant(45));
-    assert_eq!(child_frame2.metrics.end, Metrics::constant(45 + 11));
+    assert_eq!(child_frame2.metrics.end(), Metrics::constant(45 + 11));
 }
 
 #[test]
@@ -431,7 +432,7 @@ fn merge_frame_frequent_children() {
     let mut symbol_cache = SymbolCache::new(10);
     let mut merged = new_frame(MetricsRange::new(
         Metrics::constant(50),
-        Metrics::constant(50 + (90 + 80 + 64) / 3),
+        &Metrics::constant(50 + (90 + 80 + 64) / 3),
     ));
     merge::merge_children(
         &mut merged,
@@ -448,13 +449,13 @@ fn merge_frame_frequent_children() {
     let child_frame2 = extract_frame_chunk(&chunks[3]);
     let child_frame3 = extract_frame_chunk(&chunks[5]);
     assert_eq!(child_frame1.metrics.start, Metrics::constant(50 + 12));
-    assert_eq!(child_frame1.metrics.end, Metrics::constant(50 + 12 + 9));
+    assert_eq!(child_frame1.metrics.end(), Metrics::constant(50 + 12 + 9));
     assert_eq!(child_frame1.symbol.name, "a");
     assert_eq!(child_frame2.metrics.start, Metrics::constant(50 + 40));
-    assert_eq!(child_frame2.metrics.end, Metrics::constant(50 + 40 + 1));
+    assert_eq!(child_frame2.metrics.end(), Metrics::constant(50 + 40 + 1));
     assert_eq!(child_frame2.symbol.name, "common");
     assert_eq!(child_frame3.metrics.start, Metrics::constant(50 + 52));
-    assert_eq!(child_frame3.metrics.end, Metrics::constant(50 + 52 + 8));
+    assert_eq!(child_frame3.metrics.end(), Metrics::constant(50 + 52 + 8));
     assert_eq!(child_frame3.symbol.name, "b");
 }
 
@@ -489,7 +490,7 @@ fn merge_frame_with_pauses() {
     let mut symbol_cache = SymbolCache::new(10);
     let mut merged = new_frame(MetricsRange::new(
         Metrics::constant(0),
-        Metrics::constant(133),
+        &Metrics::constant(133),
     ));
     merge::merge_children(
         &mut merged,
@@ -509,14 +510,14 @@ fn merge_frame_with_pauses() {
     let pause2 = extract_pause_chunk(&chunks[4]);
     let c = extract_frame_chunk(&chunks[6]);
     assert_eq!(a.metrics.start, Metrics::constant(20));
-    assert_eq!(a.metrics.end, Metrics::constant(20 + 15));
+    assert_eq!(a.metrics.end(), Metrics::constant(20 + 15));
     assert_eq!(a.symbol.name, "a");
     assert_eq!(pause1.start, Metrics::constant(40));
-    assert_eq!(pause1.end, Metrics::constant(40 + 13));
+    assert_eq!(pause1.end(), Metrics::constant(40 + 13));
     assert_eq!(pause2.start, Metrics::constant(53));
-    assert_eq!(pause2.end, Metrics::constant(53 + 10 - 3));
+    assert_eq!(pause2.end(), Metrics::constant(53 + 10 - 3));
     assert_eq!(c.metrics.start, Metrics::constant(115));
-    assert_eq!(c.metrics.end, Metrics::constant(115 + 10));
+    assert_eq!(c.metrics.end(), Metrics::constant(115 + 10));
     assert_eq!(c.symbol.name, "c");
 }
 
@@ -543,14 +544,14 @@ fn merge_frame_with_anotations() {
     let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), None);
     assert_eq!(merged.root_frame().chunks().count(), 3);
 
-    let root_anotations = &merged.root_frame().annotations;
+    let root_anotations = merged.root_frame().annotations.as_ref().unwrap();
     let root_stats = match &root_anotations[super::ANNOTATION_STATS_NAME] {
         Annotation::Map(stats) => stats,
         _ => panic!("Expected stats annotation to be a map"),
     };
 
     let child = merged.root_frame().chunks().nth(1).unwrap();
-    let child_anotations = &extract_frame_chunk(&child).annotations;
+    let child_anotations = extract_frame_chunk(&child).annotations.as_ref().unwrap();
     let child_stats = match &child_anotations[super::ANNOTATION_STATS_NAME] {
         Annotation::Map(stats) => stats,
         _ => panic!("Expected stats annotation to be a map"),
@@ -604,7 +605,7 @@ fn merge_traces_export_raw() {
     let frame1 = produce_frames_from_metrics((500, 590), &[(520, 540, Some("a"))]);
     let mut root1 = new_frame(MetricsRange::new(
         Metrics::constant(500),
-        Metrics::constant(600),
+        &Metrics::constant(600),
     ));
     root1.add_child(frame1).unwrap();
     let trace1 = new_trace(root1);
@@ -612,7 +613,7 @@ fn merge_traces_export_raw() {
     let frame2 = produce_frames_from_metrics((300, 380), &[(310, 335, Some("a"))]);
     let mut root2 = new_frame(MetricsRange::new(
         Metrics::constant(300),
-        Metrics::constant(400),
+        &Metrics::constant(400),
     ));
     root2.add_child(frame2).unwrap();
     let trace2 = new_trace(root2);
@@ -620,7 +621,7 @@ fn merge_traces_export_raw() {
     let frame3 = produce_frames_from_metrics((400, 464), &[]);
     let mut root3 = new_frame(MetricsRange::new(
         Metrics::constant(400),
-        Metrics::constant(500),
+        &Metrics::constant(500),
     ));
     root3.add_child(frame3).unwrap();
     let trace3 = new_trace(root3);
@@ -628,7 +629,7 @@ fn merge_traces_export_raw() {
     let frame4 = produce_frames_from_metrics((0, 80), &[(10, 60, Some("a"))]);
     let mut root4 = new_frame(MetricsRange::new(
         Metrics::constant(0),
-        Metrics::constant(100),
+        &Metrics::constant(100),
     ));
     root4.add_child(frame4).unwrap();
     let trace4 = new_trace(root4);
@@ -640,6 +641,8 @@ fn merge_traces_export_raw() {
     let root_frame = merged.root_frame();
     let root_raw_data = root_frame
         .annotations
+        .as_ref()
+        .unwrap()
         .get(merge::ANNOTATION_RAW_DATA_NAME)
         .expect("Root frame should have raw data annotation");
     match root_raw_data {
@@ -656,6 +659,8 @@ fn merge_traces_export_raw() {
     let child = extract_frame_chunk(&child);
     let child_raw_data = child
         .annotations
+        .as_ref()
+        .unwrap()
         .get(merge::ANNOTATION_RAW_DATA_NAME)
         .expect("Child frame should have raw data annotation");
     match child_raw_data {
@@ -672,6 +677,8 @@ fn merge_traces_export_raw() {
     let grandchild = extract_frame_chunk(&grandchild);
     let grandchild_raw_data = grandchild
         .annotations
+        .as_ref()
+        .unwrap()
         .get(merge::ANNOTATION_RAW_DATA_NAME)
         .expect("Grandchild frame should have raw data annotation");
     match grandchild_raw_data {
@@ -751,7 +758,7 @@ fn merge_events_scaling() {
         SYMBOLS.clone(),
         new_frame(MetricsRange::new(
             Metrics::constant(250),
-            Metrics::constant(500),
+            &Metrics::constant(500),
         )),
         vec![event_a],
     );
@@ -759,13 +766,13 @@ fn merge_events_scaling() {
         SYMBOLS.clone(),
         new_frame(MetricsRange::new(
             Metrics::constant(325),
-            Metrics::constant(425),
+            &Metrics::constant(425),
         )),
         vec![event_b],
     );
     let merged_events = merge::merge_events(
         &[&trace1, &trace2],
-        &MetricsRange::new(Metrics::constant(20), Metrics::constant(100)),
+        &MetricsRange::new(Metrics::constant(20), &Metrics::constant(100)),
     );
 
     assert_eq!(merged_events.len(), 2);
@@ -801,7 +808,7 @@ fn merge_events_zipped_scaled() {
         SYMBOLS.clone(),
         new_frame(MetricsRange::new(
             Metrics::constant(250),
-            Metrics::constant(500),
+            &Metrics::constant(500),
         )),
         vec![event_a1],
     );
@@ -809,13 +816,13 @@ fn merge_events_zipped_scaled() {
         SYMBOLS.clone(),
         new_frame(MetricsRange::new(
             Metrics::constant(325),
-            Metrics::constant(425),
+            &Metrics::constant(425),
         )),
         vec![event_a2],
     );
     let merged_events = merge::merge_events(
         &[&trace1, &trace2],
-        &MetricsRange::new(Metrics::constant(20), Metrics::constant(100)),
+        &MetricsRange::new(Metrics::constant(20), &Metrics::constant(100)),
     );
     assert_eq!(merged_events.len(), 1);
 

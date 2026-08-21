@@ -140,7 +140,7 @@ fn process_return_event(
                     trace_num,
                     sample.tid,
                     trace.root_frame().metrics.start.ts,
-                    trace.root_frame().metrics.end.ts,
+                    trace.root_frame().metrics.end().ts,
                     trace
                         .get_event(trace_error::DataCollectionError::ID)
                         .unwrap()

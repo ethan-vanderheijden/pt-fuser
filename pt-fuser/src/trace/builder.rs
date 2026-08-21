@@ -35,7 +35,7 @@ struct IncompleteFrame {
 impl IncompleteFrame {
     fn complete(
         mut self,
-        end_metrics: Metrics,
+        end_metrics: &Metrics,
         options: FrameCompletionOptions,
     ) -> Result<Frame, trace::Error> {
         if options.remove_plt_stubs
@@ -144,7 +144,7 @@ impl TraceBuilder {
         self.ensure_monotonic(end_metrics);
         let options = options.unwrap_or_default();
         if self.callstack.is_empty() {
-            let completed_frame = self.current_frame.complete(end_metrics, options)?;
+            let completed_frame = self.current_frame.complete(&end_metrics, options)?;
             Ok(BuilderResult::Completed(Trace::new(
                 self.symbol_cache.into_symbols(),
                 completed_frame,
@@ -153,7 +153,7 @@ impl TraceBuilder {
         } else {
             let prev = self.callstack.pop().unwrap();
             let current_frame = std::mem::replace(&mut self.current_frame, prev);
-            let completed_frame = current_frame.complete(end_metrics, options)?;
+            let completed_frame = current_frame.complete(&end_metrics, options)?;
             self.current_frame.child_frames.push(completed_frame);
             Ok(BuilderResult::Builder(self))
         }
@@ -198,7 +198,7 @@ impl PausedTraceBuilder {
         self.inner
             .current_frame
             .pauses
-            .push(MetricsRange::new(self.pause_start, metrics));
+            .push(MetricsRange::new(self.pause_start, &metrics));
         self.inner
     }
 }
@@ -254,11 +254,10 @@ impl SymbolCache {
 
 #[cfg(test)]
 mod test {
+    use crate::trace::test::{INNER_RANGE1_END, SAMPLE_RANGE_END};
+
     use super::*;
-    use trace::{
-        Chunk,
-        test::{INNER_RANGE1, INNER_RANGE2, METRICS_ONE, SAMPLE_RANGE, TEST_SYMBOL},
-    };
+    use trace::{Chunk, test::*};
 
     fn extract_builder(result: BuilderResult) -> TraceBuilder {
         match result {
@@ -291,7 +290,7 @@ mod test {
             symbol: TEST_SYMBOL.clone(),
         };
         let completed = incomplete
-            .complete(SAMPLE_RANGE.end, FrameCompletionOptions::default())
+            .complete(&SAMPLE_RANGE_END, FrameCompletionOptions::default())
             .unwrap();
         assert_eq!(completed.chunks().count(), 1);
         assert!(completed.check_invariant());
@@ -309,7 +308,7 @@ mod test {
             symbol: TEST_SYMBOL.clone(),
         };
         let completed = incomplete
-            .complete(SAMPLE_RANGE.end, FrameCompletionOptions::default())
+            .complete(&SAMPLE_RANGE_END, FrameCompletionOptions::default())
             .unwrap();
         assert_eq!(completed.chunks().count(), 5);
         assert!(completed.check_invariant());
@@ -317,13 +316,13 @@ mod test {
 
     #[test]
     fn complete_frame_with_pauses() {
-        let pause1 = MetricsRange::new(INNER_RANGE1.start, INNER_RANGE1.start + METRICS_ONE);
+        let pause1 = MetricsRange::new(INNER_RANGE1.start, &(INNER_RANGE1.start + METRICS_ONE));
         let inner_frame = Frame::new(
-            MetricsRange::new(INNER_RANGE1.end - METRICS_ONE, INNER_RANGE1.end),
+            MetricsRange::new(INNER_RANGE1_END - METRICS_ONE, &INNER_RANGE1_END),
             0,
             TEST_SYMBOL.clone(),
         );
-        let pause2 = MetricsRange::new(INNER_RANGE2.start, INNER_RANGE2.end);
+        let pause2 = MetricsRange::new(INNER_RANGE2.start, &INNER_RANGE2_END);
         let incomplete = IncompleteFrame {
             start_metrics: SAMPLE_RANGE.start,
             child_frames: vec![inner_frame],
@@ -332,7 +331,7 @@ mod test {
             symbol: TEST_SYMBOL.clone(),
         };
         let completed = incomplete
-            .complete(SAMPLE_RANGE.end, FrameCompletionOptions::default())
+            .complete(&SAMPLE_RANGE_END, FrameCompletionOptions::default())
             .unwrap();
 
         let chunks = completed.chunks().collect::<Vec<_>>();
@@ -346,7 +345,7 @@ mod test {
     #[test]
     fn complete_without_plt_stub() {
         let inner_frame = Frame::new(
-            MetricsRange::new(INNER_RANGE1.start, INNER_RANGE1.end),
+            MetricsRange::new(INNER_RANGE1.start, &INNER_RANGE1_END),
             0,
             Arc::new(SymbolInfo {
                 name: "my_func".to_string(),
@@ -367,7 +366,7 @@ mod test {
         };
         let completed = incomplete
             .complete(
-                SAMPLE_RANGE.end,
+                &SAMPLE_RANGE_END,
                 FrameCompletionOptions {
                     remove_plt_stubs: true,
                 },
@@ -381,7 +380,7 @@ mod test {
     #[test]
     fn build_trace_simple() {
         let builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.as_ref().clone());
-        let result = builder.complete_frame(SAMPLE_RANGE.end, None).unwrap();
+        let result = builder.complete_frame(SAMPLE_RANGE_END, None).unwrap();
         match result {
             BuilderResult::Completed(trace) => {
                 assert_eq!(trace.root.metrics, SAMPLE_RANGE);
@@ -399,12 +398,12 @@ mod test {
     fn build_trace_nested() {
         let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.as_ref().clone());
         builder.push_frame(INNER_RANGE1.start, TEST_SYMBOL.as_ref().clone());
-        let mut builder = extract_builder(builder.complete_frame(INNER_RANGE1.end, None).unwrap());
+        let mut builder = extract_builder(builder.complete_frame(INNER_RANGE1_END, None).unwrap());
         builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.as_ref().clone());
         builder.push_frame(INNER_RANGE2.start, TEST_SYMBOL.as_ref().clone());
-        let builder = extract_builder(builder.complete_frame(INNER_RANGE2.end, None).unwrap());
-        let builder = extract_builder(builder.complete_frame(SAMPLE_RANGE.end, None).unwrap());
-        match builder.complete_frame(SAMPLE_RANGE.end, None).unwrap() {
+        let builder = extract_builder(builder.complete_frame(INNER_RANGE2_END, None).unwrap());
+        let builder = extract_builder(builder.complete_frame(SAMPLE_RANGE_END, None).unwrap());
+        match builder.complete_frame(SAMPLE_RANGE_END, None).unwrap() {
             BuilderResult::Completed(trace) => {
                 let root_chunks = trace.root.chunks().collect::<Vec<_>>();
                 assert_eq!(root_chunks.len(), 4);
@@ -422,7 +421,7 @@ mod test {
                 let frame2 = extract_frame_chunk(&root_chunks[3]);
                 assert_eq!(
                     frame2.metrics,
-                    MetricsRange::new(INNER_RANGE2.start, SAMPLE_RANGE.end)
+                    MetricsRange::new(INNER_RANGE2.start, &SAMPLE_RANGE_END)
                 );
                 let frame2_chunks = frame2.chunks().collect::<Vec<_>>();
                 assert_eq!(frame2_chunks.len(), 2);
@@ -450,16 +449,16 @@ mod test {
             INNER_RANGE1.start + METRICS_ONE,
             TEST_SYMBOL.as_ref().clone(),
         );
-        let paused = resumed.pause(INNER_RANGE1.end).unwrap();
+        let paused = resumed.pause(INNER_RANGE1_END).unwrap();
 
         let resumed = paused.resume(INNER_RANGE2.start);
         let builder = extract_builder(
             resumed
-                .complete_frame(INNER_RANGE2.end - METRICS_ONE, None)
+                .complete_frame(INNER_RANGE2_END - METRICS_ONE, None)
                 .unwrap(),
         );
 
-        match builder.complete_frame(INNER_RANGE2.end, None).unwrap() {
+        match builder.complete_frame(INNER_RANGE2_END, None).unwrap() {
             BuilderResult::Builder(_) => panic!("Expected completed trace"),
             BuilderResult::Completed(trace) => {
                 let root_chunks = trace.root_frame().chunks().collect::<Vec<_>>();
@@ -471,7 +470,7 @@ mod test {
                 let pause = extract_pause_chunk(&root_chunks[1]);
                 assert_eq!(
                     pause,
-                    &MetricsRange::new(SAMPLE_RANGE.start + METRICS_ONE, INNER_RANGE1.start)
+                    &MetricsRange::new(SAMPLE_RANGE.start + METRICS_ONE, &INNER_RANGE1.start)
                 );
 
                 let frame = extract_frame_chunk(&root_chunks[3]);
@@ -479,7 +478,7 @@ mod test {
                     frame.metrics,
                     MetricsRange::new(
                         INNER_RANGE1.start + METRICS_ONE,
-                        INNER_RANGE2.end - METRICS_ONE
+                        &(INNER_RANGE2_END - METRICS_ONE)
                     )
                 );
 
@@ -491,7 +490,7 @@ mod test {
                 let nested_pause = extract_pause_chunk(&frame_chunks[1]);
                 assert_eq!(
                     nested_pause,
-                    &MetricsRange::new(INNER_RANGE1.end, INNER_RANGE2.start)
+                    &MetricsRange::new(INNER_RANGE1_END, &INNER_RANGE2.start)
                 );
             }
         }
@@ -519,7 +518,7 @@ mod test {
         let builder = extract_builder(
             builder
                 .complete_frame(
-                    INNER_RANGE1.end,
+                    INNER_RANGE1_END,
                     Some(FrameCompletionOptions {
                         remove_plt_stubs: true,
                     }),
@@ -529,14 +528,14 @@ mod test {
         let builder = extract_builder(
             builder
                 .complete_frame(
-                    INNER_RANGE1.end,
+                    INNER_RANGE1_END,
                     Some(FrameCompletionOptions {
                         remove_plt_stubs: true,
                     }),
                 )
                 .unwrap(),
         );
-        let final_result = builder.complete_frame(SAMPLE_RANGE.end, None).unwrap();
+        let final_result = builder.complete_frame(SAMPLE_RANGE_END, None).unwrap();
         match final_result {
             BuilderResult::Completed(trace) => {
                 let root_chunks = trace.root_frame().chunks().collect::<Vec<_>>();
@@ -545,7 +544,7 @@ mod test {
                 assert_eq!(frame.symbol.name, "my_func");
                 assert_eq!(
                     frame.metrics,
-                    MetricsRange::new(INNER_RANGE1.start, INNER_RANGE1.end)
+                    MetricsRange::new(INNER_RANGE1.start, &INNER_RANGE1_END)
                 );
                 assert_eq!(frame.chunks().count(), 1);
             }
@@ -560,10 +559,10 @@ mod test {
         builder.new_event(20, "Event 2".to_string(), "Description 2".to_string());
 
         builder.event_occured(10, INNER_RANGE2.start);
-        builder.event_occured(20, INNER_RANGE1.end);
+        builder.event_occured(20, INNER_RANGE1_END);
         builder.event_occured(10, INNER_RANGE1.start);
 
-        let result = builder.complete_frame(SAMPLE_RANGE.end, None).unwrap();
+        let result = builder.complete_frame(SAMPLE_RANGE_END, None).unwrap();
         match result {
             BuilderResult::Completed(trace) => {
                 assert_eq!(trace.events.len(), 2);
@@ -629,11 +628,11 @@ mod test {
         builder.push_frame(INNER_RANGE1.start + METRICS_ONE, sym2.clone());
         let builder = extract_builder(
             builder
-                .complete_frame(INNER_RANGE1.end - METRICS_ONE, None)
+                .complete_frame(INNER_RANGE1_END - METRICS_ONE, None)
                 .unwrap(),
         );
-        let builder = extract_builder(builder.complete_frame(INNER_RANGE1.end, None).unwrap());
-        let final_result = builder.complete_frame(SAMPLE_RANGE.end, None).unwrap();
+        let builder = extract_builder(builder.complete_frame(INNER_RANGE1_END, None).unwrap());
+        let final_result = builder.complete_frame(SAMPLE_RANGE_END, None).unwrap();
         match final_result {
             BuilderResult::Completed(trace) => {
                 assert_eq!(trace.num_symbols(), 2);

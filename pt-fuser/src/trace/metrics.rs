@@ -237,38 +237,77 @@ impl Display for Metrics {
 pub struct MetricsRange {
     // start is inclusive and end is exclusive
     pub start: Metrics,
-    pub end: Metrics,
+    ts_incr: u32,
+    cycles_incr: u32,
+    insn_incr: u32,
 }
 
 impl MetricsRange {
-    pub fn new(start: Metrics, end: Metrics) -> Self {
-        Self { start, end }
+    /// Only supports ranges up to 2^32-1 in size for each metric.
+    pub const fn new(start: Metrics, end: &Metrics) -> Self {
+        assert!(end.ts >= start.ts);
+        assert!(end.ts - start.ts <= u32::MAX as u64);
+        assert!(end.cycles >= start.cycles);
+        assert!(end.cycles - start.cycles <= u32::MAX as u64);
+        assert!(end.insn_count >= start.insn_count);
+        assert!(end.insn_count - start.insn_count <= u32::MAX as u64);
+        Self {
+            start,
+            ts_incr: (end.ts - start.ts) as u32,
+            cycles_incr: (end.cycles - start.cycles) as u32,
+            insn_incr: (end.insn_count - start.insn_count) as u32,
+        }
     }
 
+    #[inline]
     pub fn total_time(&self) -> u64 {
-        self.end.ts - self.start.ts
+        self.ts_incr as u64
     }
 
+    #[inline]
     pub fn total_cycles(&self) -> u64 {
-        self.end.cycles - self.start.cycles
+        self.cycles_incr as u64
     }
 
+    #[inline]
     pub fn total_insn(&self) -> u64 {
-        self.end.insn_count - self.start.insn_count
+        self.insn_incr as u64
     }
 
+    #[inline]
+    pub fn end(&self) -> Metrics {
+        Metrics {
+            ts: self.start.ts + self.ts_incr as u64,
+            cycles: self.start.cycles + self.cycles_incr as u64,
+            insn_count: self.start.insn_count + self.insn_incr as u64,
+        }
+    }
+
+    #[inline]
     pub fn includes_range(&self, other: &MetricsRange) -> bool {
+        let other_end = other.end();
+        let self_end = self.end();
         self.start.ts <= other.start.ts
-            && other.end.ts <= self.end.ts
+            && other_end.ts <= self_end.ts
             && self.start.cycles <= other.start.cycles
-            && other.end.cycles <= self.end.cycles
+            && other_end.cycles <= self_end.cycles
             && self.start.insn_count <= other.start.insn_count
-            && other.end.insn_count <= self.end.insn_count
+            && other_end.insn_count <= self_end.insn_count
     }
 }
 
 impl Display for MetricsRange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MetricsRange {{ {} - {} }}", self.start, self.end)
+        let end = self.end();
+        write!(
+            f,
+            "MetricsRange {{ (ts: {}, cycles: {}, insn_count: {}) - (ts: {}, cycles: {}, insn_count: {}) }}",
+            self.start.ts,
+            self.start.cycles,
+            self.start.insn_count,
+            end.ts,
+            end.cycles,
+            end.insn_count
+        )
     }
 }
