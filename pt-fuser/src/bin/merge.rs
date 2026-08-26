@@ -24,6 +24,12 @@ struct Cli {
         help = "Record raw data of the merging algorithm into the trace as an annotation"
     )]
     record_raw: bool,
+    #[clap(
+        long,
+        default_value_t = false,
+        help = "Record noise contribution for each merged frame as an annotation"
+    )]
+    record_noise_contribution: bool,
     #[clap(long, help = Filter::HELP)]
     filter: Vec<Filter>,
     output: String,
@@ -78,9 +84,13 @@ fn main() -> ExitCode {
 
     let merged_trace = if cli.record_raw {
         let input_files = cli.input.iter().map(|s| s.as_str()).collect::<Vec<&str>>();
-        merge::merge_traces(&traces_ref, Some(&input_files))
+        merge::merge_traces(
+            &traces_ref,
+            Some(&input_files),
+            cli.record_noise_contribution,
+        )
     } else {
-        merge::merge_traces(&traces_ref, None)
+        merge::merge_traces(&traces_ref, None, cli.record_noise_contribution)
     };
     let result_data = merged_trace
         .bin_serialize(true)

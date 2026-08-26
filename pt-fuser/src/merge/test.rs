@@ -145,7 +145,7 @@ fn extract_frame_chunk<'a>(chunk: &'a Chunk) -> &'a Frame {
 
 #[test]
 fn index_empty() {
-    let (n, r) = merge::index_children(&[], None);
+    let (n, r) = merge::index_children(&[], None, &[]);
     assert_eq!(n, 0);
     assert_eq!(r.len(), 0);
 }
@@ -153,7 +153,7 @@ fn index_empty() {
 #[test]
 fn index_single() {
     let frame = produce_chunks_from_symbols(&["a", "b", "c"]);
-    let (n, r) = merge::index_children(&[&frame], None);
+    let (n, r) = merge::index_children(&[&frame], None, &[0]);
     assert_eq!(n, 3);
     assert_eq!(r.len(), 1);
     assert_eq!(extract_ids(&r[0]), vec![1, 2, 3]);
@@ -164,7 +164,7 @@ fn index_3_no_repeat() {
     let frame1 = produce_chunks_from_symbols(&["a", "b", "c", "d"]);
     let frame2 = produce_chunks_from_symbols(&["b", "c", "e", "g", "h", "d"]);
     let frame3 = produce_chunks_from_symbols(&["f", "a", "d", "e"]);
-    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3], None);
+    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3], None, &[0, 1, 2]);
     assert_eq!(n, 8);
     assert_eq!(r.len(), 3);
     assert_eq!(extract_ids(&r[0]), vec![1, 2, 3, 4]);
@@ -177,7 +177,7 @@ fn index_3_repeating() {
     let frame1 = produce_chunks_from_symbols(&["a", "b", "a", "c", "d", "c"]);
     let frame2 = produce_chunks_from_symbols(&["b", "c", "a", "a", "e", "g", "e", "h"]);
     let frame3 = produce_chunks_from_symbols(&["c", "a", "c", "f", "h", "a", "d", "e"]);
-    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3], None);
+    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3], None, &[0, 1, 2]);
     assert_eq!(n, 11);
     assert_eq!(r.len(), 3);
     assert_eq!(extract_ids(&r[0]), vec![1, 2, 3, 4, 5, 6]);
@@ -192,7 +192,7 @@ fn index_3_with_pauses() {
     let frame3 = produce_chunks_from_symbols(&[
         "[pause]", "[pause]", "c", "a", "c", "f", "[pause]", "h", "a", "d", "e",
     ]);
-    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3], None);
+    let (n, r) = merge::index_children(&[&frame1, &frame2, &frame3], None, &[0, 1, 2]);
     assert_eq!(n, 14);
     assert_eq!(r.len(), 3);
     assert_eq!(extract_ids(&r[0]), vec![1, 2, 3, 4, 5, 6, 7, 8]);
@@ -370,7 +370,7 @@ fn merge_traces_no_children() {
     let trace2 = new_trace(frame2);
     let frame3 = produce_frames_from_metrics((400, 464), &[]);
     let trace3 = new_trace(frame3);
-    let merged = merge::merge_traces(&[&trace1, &trace2, &trace3], None);
+    let merged = merge::merge_traces(&[&trace1, &trace2, &trace3], None, false);
     assert_eq!(merged.root_frame().metrics.start, Metrics::constant(0));
     assert_eq!(
         merged.root_frame().metrics.end(),
@@ -386,7 +386,7 @@ fn merge_traces_common_children() {
     let trace2 = new_trace(frame2);
     let frame3 = produce_frames_from_metrics((400, 464), &[(415, 430, None), (445, 458, None)]);
     let trace3 = new_trace(frame3);
-    let merged = merge::merge_traces(&[&trace1, &trace2, &trace3], None);
+    let merged = merge::merge_traces(&[&trace1, &trace2, &trace3], None, false);
     assert_eq!(merged.root_frame().metrics.start, Metrics::constant(0));
     assert_eq!(
         merged.root_frame().metrics.end(),
@@ -437,6 +437,8 @@ fn merge_frame_frequent_children() {
     merge::merge_children(
         &mut merged,
         &[&frame1, &frame2, &frame3],
+        None,
+        &[0, 1, 2],
         None,
         &mut symbol_cache,
         &mut Vec::new(),
@@ -496,6 +498,8 @@ fn merge_frame_with_pauses() {
         &mut merged,
         &[&frame1, &frame2, &frame3],
         None,
+        &[0, 1, 2],
+        None,
         &mut symbol_cache,
         &mut Vec::new(),
         0.6,
@@ -541,7 +545,7 @@ fn merge_frame_with_anotations() {
         .iter()
         .map(|frame| new_trace(frame.clone()))
         .collect::<Vec<_>>();
-    let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), None);
+    let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), None, true);
     assert_eq!(merged.root_frame().chunks().count(), 3);
 
     let root_anotations = merged.root_frame().annotations.as_ref().unwrap();
@@ -577,6 +581,10 @@ fn merge_frame_with_anotations() {
         }
         _ => panic!("Expected std dev annotation to be a double"),
     }
+    assert_eq!(
+        root_stats[super::ANNOTATION_NOISE_CONTRIBUTION_NAME],
+        Annotation::Double(1.0)
+    );
 
     assert_eq!(
         child_anotations[super::ANNOTATION_COUNT_NAME],
@@ -597,6 +605,118 @@ fn merge_frame_with_anotations() {
             );
         }
         _ => panic!("Expected std dev annotation to be a double"),
+    }
+    match &child_stats[super::ANNOTATION_NOISE_CONTRIBUTION_NAME] {
+        Annotation::Double(noise_contribution) => {
+            assert!(
+                (noise_contribution - 0.5717235169650965).abs() < 1e-12,
+                "Expected NC to include zero latency for the two traces without the child"
+            );
+        }
+        _ => panic!("Expected noise contribution annotation to be a double"),
+    }
+}
+
+#[test]
+fn merge_frame_omits_noise_contribution_when_not_requested() {
+    let root_frames = (0..10)
+        .map(|i| produce_frames_from_metrics((0, 100 + i), &[(10, 20 + i, Some("a"))]))
+        .collect::<Vec<_>>();
+    let traces = root_frames
+        .iter()
+        .map(|frame| new_trace(frame.clone()))
+        .collect::<Vec<_>>();
+
+    let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), None, false);
+    let root_annotations = merged.root_frame().annotations.as_ref().unwrap();
+    let root_stats = match &root_annotations[super::ANNOTATION_STATS_NAME] {
+        Annotation::Map(stats) => stats,
+        _ => panic!("Expected root stats annotation to be a map"),
+    };
+    assert!(!root_stats.contains_key(super::ANNOTATION_NOISE_CONTRIBUTION_NAME));
+
+    let child = merged.root_frame().chunks().nth(1).unwrap();
+    let child_annotations = extract_frame_chunk(&child).annotations.as_ref().unwrap();
+    let child_stats = match &child_annotations[super::ANNOTATION_STATS_NAME] {
+        Annotation::Map(stats) => stats,
+        _ => panic!("Expected child stats annotation to be a map"),
+    };
+    assert!(!child_stats.contains_key(super::ANNOTATION_NOISE_CONTRIBUTION_NAME));
+}
+
+#[test]
+fn merge_frame_omits_noise_contribution_when_e2e_stddev_is_zero() {
+    let root_frames = (0..10)
+        .map(|i| produce_frames_from_metrics((0, 100), &[(10, 20 + i, Some("a"))]))
+        .collect::<Vec<_>>();
+    let traces = root_frames
+        .iter()
+        .map(|frame| new_trace(frame.clone()))
+        .collect::<Vec<_>>();
+
+    let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), None, true);
+    let root_annotations = merged.root_frame().annotations.as_ref().unwrap();
+    let root_stats = match &root_annotations[super::ANNOTATION_STATS_NAME] {
+        Annotation::Map(stats) => stats,
+        _ => panic!("Expected root stats annotation to be a map"),
+    };
+    assert_eq!(root_stats["Std Dev"], Annotation::Double(0.0));
+    assert!(!root_stats.contains_key(super::ANNOTATION_NOISE_CONTRIBUTION_NAME));
+
+    let child = merged.root_frame().chunks().nth(1).unwrap();
+    let child_annotations = extract_frame_chunk(&child).annotations.as_ref().unwrap();
+    let child_stats = match &child_annotations[super::ANNOTATION_STATS_NAME] {
+        Annotation::Map(stats) => stats,
+        _ => panic!("Expected child stats annotation to be a map"),
+    };
+    assert!(!child_stats.contains_key(super::ANNOTATION_NOISE_CONTRIBUTION_NAME));
+}
+
+#[test]
+fn merge_frame_adds_noise_contribution_to_nested_frame_with_missing_traces() {
+    let root_frames = (0..10)
+        .map(|i| {
+            let mut outer = if i < 7 {
+                produce_frames_from_metrics((10, 80), &[(20, 30 + i, Some("a"))])
+            } else {
+                produce_frames_from_metrics((10, 80), &[])
+            };
+            outer.symbol = Arc::new(SymbolInfo {
+                name: "outer".to_string(),
+                offset: outer.symbol.offset,
+                size: outer.symbol.size,
+            });
+
+            let mut root = new_frame(MetricsRange::new(
+                Metrics::constant(0),
+                &Metrics::constant(100 + 2 * i),
+            ));
+            root.add_child(outer).unwrap();
+            root
+        })
+        .collect::<Vec<_>>();
+    let traces = root_frames
+        .iter()
+        .map(|frame| new_trace(frame.clone()))
+        .collect::<Vec<_>>();
+
+    let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), None, true);
+    let outer = merged.root_frame().chunks().nth(1).unwrap();
+    let outer = extract_frame_chunk(&outer);
+    let nested = outer.chunks().nth(1).unwrap();
+    let nested = extract_frame_chunk(&nested);
+    let nested_annotations = nested.annotations.as_ref().unwrap();
+    assert_eq!(
+        nested_annotations[super::ANNOTATION_COUNT_NAME],
+        Annotation::Uint64(7)
+    );
+    let nested_stats = match &nested_annotations[super::ANNOTATION_STATS_NAME] {
+        Annotation::Map(stats) => stats,
+        _ => panic!("Expected nested stats annotation to be a map"),
+    };
+    match &nested_stats[super::ANNOTATION_NOISE_CONTRIBUTION_NAME] {
+        Annotation::Double(noise_contribution) => assert!(noise_contribution.is_finite()),
+        _ => panic!("Expected nested noise contribution annotation to be a double"),
     }
 }
 
@@ -637,6 +757,7 @@ fn merge_traces_export_raw() {
     let merged = merge::merge_traces(
         &[&trace1, &trace2, &trace3, &trace4],
         Some(&["t1", "t2", "t3", "t4"]),
+        false,
     );
     let root_frame = merged.root_frame();
     let root_raw_data = root_frame
