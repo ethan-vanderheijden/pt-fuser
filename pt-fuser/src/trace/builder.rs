@@ -281,6 +281,46 @@ mod test {
     }
 
     #[test]
+    fn trace_name() {
+        let builder = TraceBuilder::new(
+            SAMPLE_RANGE.start,
+            SymbolInfo {
+                name: "func".to_string(),
+                offset: 0,
+                size: 0,
+            },
+        );
+        let result = builder.complete_frame(SAMPLE_RANGE_END, None).unwrap();
+        match result {
+            BuilderResult::Completed(trace) => {
+                assert_eq!(trace.root_frame().symbol.name, "func");
+            }
+            _ => panic!("Expected completed trace"),
+        }
+    }
+
+    #[test]
+    fn trace_name_paused() {
+        let builder = TraceBuilder::new(
+            SAMPLE_RANGE.start,
+            SymbolInfo {
+                name: "func".to_string(),
+                offset: 0,
+                size: 0,
+            },
+        );
+        let paused = builder.pause(INNER_RANGE1.start).unwrap();
+        let builder = paused.resume(INNER_RANGE1_END);
+        let result = builder.complete_frame(SAMPLE_RANGE_END, None).unwrap();
+        match result {
+            BuilderResult::Completed(trace) => {
+                assert_eq!(trace.root_frame().symbol.name, "func");
+            }
+            _ => panic!("Expected completed trace"),
+        }
+    }
+
+    #[test]
     fn complete_empty_frame() {
         let incomplete = IncompleteFrame {
             start_metrics: SAMPLE_RANGE.start,

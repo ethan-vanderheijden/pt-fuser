@@ -1,5 +1,13 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
+use clap::ValueEnum;
 use indexmap::IndexMap;
 use perfetto_rust::{
     DebugAnnotation, DebugAnnotationName, EventName, InternedData, InternedString, TracePacket,
@@ -10,7 +18,9 @@ use perfetto_rust::{
 };
 use prost::Message;
 
-use crate::trace::{Annotation, Chunk, Frame, Trace};
+use crate::trace::{Annotation, Chunk, Frame, Trace, metrics::MetricsRange};
+
+pub const PAUSE_BLOCK_NAME: &str = "--pause--";
 
 const GLOBAL_TRACK_ID: u64 = 10;
 const GLOBAL_SEQUENCE_ID: u32 = 1;
@@ -117,17 +127,12 @@ fn create_event(timestamp: u64, event_id: u32) -> TracePacket {
     event
 }
 
-struct StackFrame {
-    iid: u64,
-    annotations: Option<Vec<DebugAnnotation>>,
-}
-
-struct Converter {
+struct InternedStrings {
     interned_names: HashMap<String, u64>,
     last_iid: u64,
 }
 
-impl Converter {
+impl InternedStrings {
     fn new() -> Self {
         Self {
             interned_names: HashMap::new(),
@@ -144,6 +149,50 @@ impl Converter {
             (true, self.last_iid)
         }
     }
+}
+
+struct StackFrame {
+    iid: u64,
+    annotations: Option<Vec<DebugAnnotation>>,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum PauseRenderOption {
+    Gap,
+    Block,
+}
+
+impl Display for PauseRenderOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PauseRenderOption::Gap => write!(f, "gap"),
+            PauseRenderOption::Block => write!(f, "block"),
+        }
+    }
+}
+
+struct Converter {
+    interned_events: InternedStrings,
+    interned_debug_values: InternedStrings,
+    interned_debug_names: InternedStrings,
+    current_stack: Option<Vec<StackFrame>>, // if Some, render pauses as gaps
+    stop: Arc<AtomicBool>,
+}
+
+impl Converter {
+    fn new(render_pauses: PauseRenderOption, stop_flag: Arc<AtomicBool>) -> Self {
+        let stack = match render_pauses {
+            PauseRenderOption::Gap => Some(Vec::new()),
+            PauseRenderOption::Block => None,
+        };
+        Self {
+            interned_events: InternedStrings::new(),
+            interned_debug_values: InternedStrings::new(),
+            interned_debug_names: InternedStrings::new(),
+            current_stack: stack,
+            stop: stop_flag,
+        }
+    }
 
     /// Precondition: annotation cannot be a Map or an Array
     fn convert_basic_annotation(
@@ -158,7 +207,7 @@ impl Converter {
             Annotation::Double(d) => debug_annotation::Value::DoubleValue(*d),
             Annotation::Pointer(p) => debug_annotation::Value::PointerValue(*p),
             Annotation::String(s) => {
-                let (is_new, iid) = self.intern_string(s);
+                let (is_new, iid) = self.interned_debug_values.intern_string(s);
                 if is_new {
                     interned_data
                         .debug_annotation_string_values
@@ -180,7 +229,7 @@ impl Converter {
     ) -> Vec<DebugAnnotation> {
         let mut result = Vec::new();
         for (key, value) in annotations {
-            let (is_new, key_iid) = self.intern_string(key);
+            let (is_new, key_iid) = self.interned_debug_names.intern_string(key);
             if is_new {
                 interned_data
                     .debug_annotation_names
@@ -238,14 +287,55 @@ impl Converter {
             .collect()
     }
 
-    fn process_frame(
-        &mut self,
-        frame: &Frame,
-        stack_iid: &mut Vec<StackFrame>,
-    ) -> Vec<TracePacket> {
-        let mut packets = Vec::new();
+    fn render_gap(&mut self, packets: &mut Vec<TracePacket>, metrics: &MetricsRange) {
+        if let Some(stack) = &self.current_stack {
+            // pretend all previous stack frames end here
+            for _ in 0..stack.len() {
+                let slice_end =
+                    create_slice_end(metrics.start.ts, TRACE_SEQUENCE_ID, TRACE_TRACK_ID);
+                packets.push(slice_end);
+            }
 
-        let (is_new, iid) = self.intern_string(&frame.symbol.name);
+            // previous stack frames resume once pause is over
+            // in Perfetto, this appears as a blank gap, indicating that tracing was paused
+            let resume = metrics.end().ts;
+            for stack_frame in stack.iter() {
+                let slice_begin = create_slice_begin(
+                    resume,
+                    TRACE_SEQUENCE_ID,
+                    TRACE_TRACK_ID,
+                    NameField::NameIid(stack_frame.iid),
+                    stack_frame.annotations.clone(),
+                );
+                packets.push(slice_begin);
+            }
+        } else {
+            let (is_new, iid) = self.interned_events.intern_string(PAUSE_BLOCK_NAME);
+            let mut intern_data = InternedData::default();
+            if is_new {
+                intern_data.event_names = vec![EventName {
+                    iid: Some(iid),
+                    name: Some(PAUSE_BLOCK_NAME.to_string()),
+                }];
+            }
+
+            let mut slice_begin = create_slice_begin(
+                metrics.start.ts,
+                TRACE_SEQUENCE_ID,
+                TRACE_TRACK_ID,
+                NameField::NameIid(iid),
+                None,
+            );
+            slice_begin.interned_data = Some(intern_data);
+            packets.push(slice_begin);
+
+            let slice_end = create_slice_end(metrics.end().ts, TRACE_SEQUENCE_ID, TRACE_TRACK_ID);
+            packets.push(slice_end);
+        }
+    }
+
+    fn process_frame(&mut self, frame: &Frame, packets: &mut Vec<TracePacket>) {
+        let (is_new, iid) = self.interned_events.intern_string(&frame.symbol.name);
         let mut intern_data = InternedData::default();
         if is_new {
             intern_data.event_names = vec![EventName {
@@ -254,9 +344,10 @@ impl Converter {
             }];
         }
 
-        let annotations = frame.annotations.as_ref().map(|a| {
-            self.convert_annotation_map(a, &mut intern_data)
-        });
+        let annotations = frame
+            .annotations
+            .as_ref()
+            .map(|a| self.convert_annotation_map(a, &mut intern_data));
         let mut slice_begin = create_slice_begin(
             frame.metrics.start.ts,
             TRACE_SEQUENCE_ID,
@@ -267,52 +358,37 @@ impl Converter {
         slice_begin.interned_data = Some(intern_data);
         packets.push(slice_begin);
 
-        stack_iid.push(StackFrame {
-            iid,
-            annotations: annotations,
-        });
+        if let Some(stack) = &mut self.current_stack {
+            stack.push(StackFrame {
+                iid,
+                annotations: annotations,
+            });
+        }
 
         for chunk in frame.chunks() {
+            if self.stop.load(Ordering::Relaxed) {
+                break;
+            }
+
             match chunk {
-                Chunk::Frame(child) => packets.extend(self.process_frame(child, stack_iid)),
+                Chunk::Frame(child) => self.process_frame(child, packets),
                 Chunk::Straightline(_) => continue,
                 Chunk::Pause(metrics) => {
-                    // pretend all previous stack frames end here
-                    for _ in 0..stack_iid.len() {
-                        let slice_end =
-                            create_slice_end(metrics.start.ts, TRACE_SEQUENCE_ID, TRACE_TRACK_ID);
-                        packets.push(slice_end);
-                    }
-
-                    // previous stack frames resume once pause is over
-                    // in Perfetto, this appears as a blank gap, indicating that tracing was paused
-                    let resume = metrics.end().ts;
-                    for stack_frame in stack_iid.iter() {
-                        let slice_begin = create_slice_begin(
-                            resume,
-                            TRACE_SEQUENCE_ID,
-                            TRACE_TRACK_ID,
-                            NameField::NameIid(stack_frame.iid),
-                            stack_frame.annotations.clone(),
-                        );
-                        packets.push(slice_begin);
-                    }
+                    self.render_gap(packets, &metrics);
                 }
             }
         }
 
-        stack_iid.pop();
+        if let Some(stack) = &mut self.current_stack {
+            stack.pop();
+        }
 
         let slice_end = create_slice_end(frame.metrics.end().ts, TRACE_SEQUENCE_ID, TRACE_TRACK_ID);
         packets.push(slice_end);
-
-        packets
     }
 }
 
-pub fn convert_to_perfetto(trace: &Trace) -> Vec<u8> {
-    let mut converter = Converter::new();
-
+pub fn convert_to_perfetto(trace: &Trace, render_pauses: PauseRenderOption) -> Vec<u8> {
     let mut packets = Vec::new();
     packets.push(create_track(
         trace.root_frame().metrics.start.ts,
@@ -347,7 +423,15 @@ pub fn convert_to_perfetto(trace: &Trace) -> Vec<u8> {
         None,
         Some(i32::MAX),
     ));
-    packets.extend(converter.process_frame(trace.root_frame(), &mut Vec::new()));
+
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let mut converter = Converter::new(render_pauses, stop_flag.clone());
+    ctrlc::set_handler(move || {
+        stop_flag.store(true, Ordering::Relaxed);
+        println!("Ending conversion as-is due to Ctrl-C");
+    })
+    .expect("Error setting Ctrl-C handler");
+    converter.process_frame(trace.root_frame(), &mut packets);
 
     for event in trace.events() {
         if let Some(first_occurence) = event.occurences().first() {
