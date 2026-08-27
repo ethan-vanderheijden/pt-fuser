@@ -35,7 +35,5 @@ fn main() {
 
     println!("Converting trace file... Ctrl-C to end conversion early.");
 
-    let perfetto_data = perfetto::convert_to_perfetto(&trace, cli.render_pauses);
-
-    fs::write(cli.output, perfetto_data).expect("Failed to write perfetto trace to file");
+    perfetto::convert_to_perfetto(&trace, &cli.output, cli.render_pauses);
 }
