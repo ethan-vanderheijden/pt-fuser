@@ -16,12 +16,12 @@ jobs:
       matrix:
         include:
           # Linux x86_64 (Native build)
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             use_cross: false
             build_libtransform: true
           # Linux ARM64 (Cross-compiled via Docker)
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             use_cross: true
             build_libtransform: true
