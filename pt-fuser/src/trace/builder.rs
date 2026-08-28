@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bloomfilter::Bloom;
 
-use crate::trace::{self, Event, Frame, Metrics, MetricsRange, SymbolInfo, Trace};
+use crate::trace::{self, Event, Frame, Metrics, MetricsRange, StoredChunk, SymbolInfo, Trace};
 
 pub struct FrameCompletionOptions {
     // sometimes, calling a function first goes to the Procedure Linkage Table (PLT) stub, which
@@ -26,8 +26,7 @@ fn is_plt_stub(parent_symbol: &SymbolInfo, child_symbol: &SymbolInfo) -> bool {
 #[derive(Debug, Clone, PartialEq)]
 struct IncompleteFrame {
     start_metrics: Metrics,
-    child_frames: Vec<Frame>,
-    pauses: Vec<MetricsRange>,
+    children: Vec<StoredChunk>,
     symbol_idx: usize,
     symbol: Arc<SymbolInfo>,
 }
@@ -38,14 +37,22 @@ impl IncompleteFrame {
         end_metrics: &Metrics,
         options: FrameCompletionOptions,
     ) -> Result<Frame, trace::Error> {
-        if options.remove_plt_stubs
-            && self.child_frames.len() == 1
-            && self.pauses.is_empty()
-            && is_plt_stub(&self.symbol, &self.child_frames[0].symbol)
-        {
-            let mut child = self.child_frames.remove(0);
-            child.metrics = MetricsRange::new(self.start_metrics, end_metrics);
-            return Ok(child);
+        if options.remove_plt_stubs && self.children.len() == 1 {
+            match &self.children[0] {
+                StoredChunk::Frame(child_frame)
+                    if is_plt_stub(&self.symbol, child_frame.symbol.as_ref()) =>
+                {
+                    match self.children.remove(0) {
+                        StoredChunk::Frame(mut child_frame) => {
+                            child_frame.metrics =
+                                MetricsRange::new(self.start_metrics, end_metrics);
+                            return Ok(child_frame);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                _ => {}
+            }
         }
 
         let mut completed = Frame::new(
@@ -54,21 +61,11 @@ impl IncompleteFrame {
             self.symbol,
         );
 
-        while !self.child_frames.is_empty() && !self.pauses.is_empty() {
-            let child = self.child_frames.first().unwrap();
-            let pause = self.pauses.first().unwrap();
-            if child.metrics.start < pause.start {
-                completed.add_child(self.child_frames.remove(0))?;
-            } else {
-                completed.add_pause(self.pauses.remove(0))?;
+        for child in self.children.into_iter() {
+            match child {
+                StoredChunk::Frame(frame) => completed.add_child(frame)?,
+                StoredChunk::Pause(pause) => completed.add_pause(pause)?,
             }
-        }
-
-        for child in self.child_frames.into_iter() {
-            completed.add_child(child)?;
-        }
-        for pause in self.pauses.into_iter() {
-            completed.add_pause(pause)?;
         }
 
         Ok(completed)
@@ -107,15 +104,15 @@ impl TraceBuilder {
     pub fn new(start_metrics: Metrics, symbol: SymbolInfo) -> Self {
         let mut symbol_cache = SymbolCache::new(10000);
         let sym_idx = symbol_cache.get_or_insert(symbol);
+        let sym_ref = symbol_cache.get_ref(sym_idx);
         TraceBuilder {
             last_metrics: start_metrics,
-            symbol_cache: SymbolCache::new(10000),
+            symbol_cache,
             current_frame: IncompleteFrame {
                 start_metrics,
-                child_frames: Vec::new(),
-                pauses: Vec::new(),
+                children: Vec::new(),
                 symbol_idx: sym_idx,
-                symbol: symbol_cache.get_ref(sym_idx),
+                symbol: sym_ref,
             },
             callstack: Vec::new(),
             events: Vec::new(),
@@ -127,8 +124,7 @@ impl TraceBuilder {
         let sym_idx = self.symbol_cache.get_or_insert(symbol);
         let new_frame = IncompleteFrame {
             start_metrics: metrics,
-            child_frames: Vec::new(),
-            pauses: Vec::new(),
+            children: Vec::new(),
             symbol_idx: sym_idx,
             symbol: self.symbol_cache.get_ref(sym_idx),
         };
@@ -154,7 +150,9 @@ impl TraceBuilder {
             let prev = self.callstack.pop().unwrap();
             let current_frame = std::mem::replace(&mut self.current_frame, prev);
             let completed_frame = current_frame.complete(&end_metrics, options)?;
-            self.current_frame.child_frames.push(completed_frame);
+            self.current_frame
+                .children
+                .push(StoredChunk::Frame(completed_frame));
             Ok(BuilderResult::Builder(self))
         }
     }
@@ -197,8 +195,11 @@ impl PausedTraceBuilder {
         self.inner.ensure_monotonic(metrics);
         self.inner
             .current_frame
-            .pauses
-            .push(MetricsRange::new(self.pause_start, &metrics));
+            .children
+            .push(StoredChunk::Pause(MetricsRange::new(
+                self.pause_start,
+                &metrics,
+            )));
         self.inner
     }
 }
@@ -281,8 +282,8 @@ mod test {
     }
 
     #[test]
-    fn trace_name() {
-        let builder = TraceBuilder::new(
+    fn trace_frame_names() {
+        let mut builder = TraceBuilder::new(
             SAMPLE_RANGE.start,
             SymbolInfo {
                 name: "func".to_string(),
@@ -290,31 +291,29 @@ mod test {
                 size: 0,
             },
         );
+        builder.push_frame(
+            INNER_RANGE1.start,
+            SymbolInfo {
+                name: "inner_func".to_string(),
+                offset: 0,
+                size: 0,
+            },
+        );
+        let builder = extract_builder(builder.complete_frame(INNER_RANGE1_END, None).unwrap());
         let result = builder.complete_frame(SAMPLE_RANGE_END, None).unwrap();
         match result {
             BuilderResult::Completed(trace) => {
                 assert_eq!(trace.root_frame().symbol.name, "func");
-            }
-            _ => panic!("Expected completed trace"),
-        }
-    }
+                let child = trace.root_frame().chunks().nth(1).unwrap();
+                let child = extract_frame_chunk(&child);
+                assert_eq!(child.symbol.name, "inner_func");
 
-    #[test]
-    fn trace_name_paused() {
-        let builder = TraceBuilder::new(
-            SAMPLE_RANGE.start,
-            SymbolInfo {
-                name: "func".to_string(),
-                offset: 0,
-                size: 0,
-            },
-        );
-        let paused = builder.pause(INNER_RANGE1.start).unwrap();
-        let builder = paused.resume(INNER_RANGE1_END);
-        let result = builder.complete_frame(SAMPLE_RANGE_END, None).unwrap();
-        match result {
-            BuilderResult::Completed(trace) => {
-                assert_eq!(trace.root_frame().symbol.name, "func");
+                assert_eq!(trace.num_symbols(), 2);
+                assert!(Arc::ptr_eq(
+                    &trace.symbols[trace.root_frame().symbol_idx],
+                    &trace.root_frame().symbol
+                ));
+                assert!(Arc::ptr_eq(&trace.symbols[child.symbol_idx], &child.symbol));
             }
             _ => panic!("Expected completed trace"),
         }
@@ -324,8 +323,7 @@ mod test {
     fn complete_empty_frame() {
         let incomplete = IncompleteFrame {
             start_metrics: SAMPLE_RANGE.start,
-            child_frames: Vec::new(),
-            pauses: Vec::new(),
+            children: Vec::new(),
             symbol_idx: 0,
             symbol: TEST_SYMBOL.clone(),
         };
@@ -342,8 +340,7 @@ mod test {
         let inner2 = Frame::new(INNER_RANGE2, 0, TEST_SYMBOL.clone());
         let incomplete = IncompleteFrame {
             start_metrics: SAMPLE_RANGE.start,
-            child_frames: vec![inner1, inner2],
-            pauses: Vec::new(),
+            children: vec![StoredChunk::Frame(inner1), StoredChunk::Frame(inner2)],
             symbol_idx: 0,
             symbol: TEST_SYMBOL.clone(),
         };
@@ -365,8 +362,11 @@ mod test {
         let pause2 = MetricsRange::new(INNER_RANGE2.start, &INNER_RANGE2_END);
         let incomplete = IncompleteFrame {
             start_metrics: SAMPLE_RANGE.start,
-            child_frames: vec![inner_frame],
-            pauses: vec![pause1, pause2],
+            children: vec![
+                StoredChunk::Pause(pause1),
+                StoredChunk::Frame(inner_frame),
+                StoredChunk::Pause(pause2),
+            ],
             symbol_idx: 0,
             symbol: TEST_SYMBOL.clone(),
         };
@@ -395,8 +395,7 @@ mod test {
         );
         let incomplete = IncompleteFrame {
             start_metrics: SAMPLE_RANGE.start,
-            child_frames: vec![inner_frame],
-            pauses: Vec::new(),
+            children: vec![StoredChunk::Frame(inner_frame)],
             symbol_idx: 1,
             symbol: Arc::new(SymbolInfo {
                 name: "my_func@plt".to_string(),

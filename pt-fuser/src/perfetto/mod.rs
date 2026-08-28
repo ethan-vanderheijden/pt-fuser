@@ -46,7 +46,7 @@ pub fn convert_to_perfetto(trace: &Trace, output_file: &str, render_pauses: Paus
     .expect("Error setting Ctrl-C handler");
 
     let mut file = File::create(output_file).expect("Failed to create output file");
-    thread::spawn(move || {
+    let writer = thread::spawn(move || {
         for packet in receiver {
             let packet = perfetto_rust::Trace {
                 packet: vec![packet],
@@ -57,4 +57,5 @@ pub fn convert_to_perfetto(trace: &Trace, output_file: &str, render_pauses: Paus
         }
     });
     converter.start(sender);
+    writer.join().expect("Failed to join file writing thread");
 }
