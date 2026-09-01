@@ -1,6 +1,8 @@
 use std::{
-    fmt::Display,
+    fmt::{Debug, Display},
+    hash::Hash,
     iter::Sum,
+    marker::PhantomData,
     ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign},
 };
 
@@ -233,53 +235,217 @@ impl Display for Metrics {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct InlineOrPtr<T> {
+    bits: u64,
+    _marker: PhantomData<T>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InlineOrPtrView<'a, T> {
+    Inline(u64),
+    Ptr(&'a T),
+}
+
+impl<T> InlineOrPtr<T> {
+    const TAG_MASK: u64 = 1;
+
+    fn new_heap(val: T) -> Self {
+        let boxed = Box::new(val);
+        let addr_u64 = (Box::into_raw(boxed) as usize) as u64;
+        debug_assert_eq!(
+            addr_u64 & Self::TAG_MASK,
+            0,
+            "Type alignment must be at least 2 for InlineOrPtr<T>"
+        );
+        InlineOrPtr {
+            bits: addr_u64,
+            _marker: PhantomData,
+        }
+    }
+
+    fn new_inline(val: u64) -> Self {
+        debug_assert_eq!(
+            (val >> 63),
+            0,
+            "Inline value must fit in 63 bits for InlineOrPtr<T>"
+        );
+        InlineOrPtr {
+            bits: (val << 1) | Self::TAG_MASK,
+            _marker: PhantomData,
+        }
+    }
+
+    fn is_inline(&self) -> bool {
+        (self.bits & Self::TAG_MASK) != 0
+    }
+
+    fn as_enum<'a>(&self) -> InlineOrPtrView<'a, T> {
+        if self.is_inline() {
+            InlineOrPtrView::Inline(self.bits >> 1)
+        } else {
+            let ptr = (self.bits as usize) as *const T;
+            unsafe { InlineOrPtrView::Ptr(&*ptr) }
+        }
+    }
+}
+
+impl<T> Drop for InlineOrPtr<T> {
+    fn drop(&mut self) {
+        if !self.is_inline() {
+            let ptr = (self.bits as usize) as *mut T;
+            unsafe {
+                let _ = Box::from_raw(ptr);
+            }
+        }
+    }
+}
+
+impl<T> Debug for InlineOrPtr<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.as_enum() {
+            InlineOrPtrView::Inline(val) => write!(f, "Inline({})", val),
+            InlineOrPtrView::Ptr(ptr) => write!(f, "Ptr({:p})", ptr),
+        }
+    }
+}
+
+impl<T: Clone> Clone for InlineOrPtr<T> {
+    fn clone(&self) -> Self {
+        if self.is_inline() {
+            InlineOrPtr {
+                bits: self.bits,
+                _marker: PhantomData,
+            }
+        } else {
+            let ptr = (self.bits as usize) as *const T;
+            let cloned = unsafe { (*ptr).clone() };
+            InlineOrPtr::new_heap(cloned)
+        }
+    }
+}
+
+impl<T: PartialEq> PartialEq for InlineOrPtr<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_enum() == other.as_enum()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+enum InlineOrPtrHelper<T> {
+    Inline(u64),
+    Ptr(T),
+}
+
+impl<T: Serialize> Serialize for InlineOrPtr<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.as_enum() {
+            InlineOrPtrView::Inline(val) => {
+                InlineOrPtrHelper::<T>::Inline(val).serialize(serializer)
+            }
+            InlineOrPtrView::Ptr(ptr) => InlineOrPtrHelper::Ptr(ptr).serialize(serializer),
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for InlineOrPtr<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let helper = InlineOrPtrHelper::<T>::deserialize(deserializer)?;
+        match helper {
+            InlineOrPtrHelper::Inline(val) => Ok(InlineOrPtr::new_inline(val)),
+            InlineOrPtrHelper::Ptr(ptr) => Ok(InlineOrPtr::new_heap(ptr)),
+        }
+    }
+}
+
+impl<T: Eq> Eq for InlineOrPtr<T> {}
+
+impl<T: Hash> Hash for InlineOrPtr<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.is_inline().hash(state);
+        match self.as_enum() {
+            InlineOrPtrView::Inline(val) => val.hash(state),
+            InlineOrPtrView::Ptr(ptr) => ptr.hash(state),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MetricsRange {
     // start is inclusive and end is exclusive
     pub start: Metrics,
-    ts_incr: u32,
-    cycles_incr: u32,
-    insn_incr: u32,
+    end: InlineOrPtr<Metrics>,
 }
 
 impl MetricsRange {
-    /// Only supports ranges up to 2^32-1 in size for each metric.
-    pub const fn new(start: Metrics, end: &Metrics) -> Self {
+    // start must be less than end in all metrics
+    pub fn new(start: Metrics, end: &Metrics) -> Self {
         assert!(end.ts >= start.ts);
-        assert!(end.ts - start.ts <= u32::MAX as u64);
         assert!(end.cycles >= start.cycles);
-        assert!(end.cycles - start.cycles <= u32::MAX as u64);
         assert!(end.insn_count >= start.insn_count);
-        assert!(end.insn_count - start.insn_count <= u32::MAX as u64);
-        Self {
-            start,
-            ts_incr: (end.ts - start.ts) as u32,
-            cycles_incr: (end.cycles - start.cycles) as u32,
-            insn_incr: (end.insn_count - start.insn_count) as u32,
+        let ts_diff = end.ts - start.ts;
+        let cycles_diff = end.cycles - start.cycles;
+        let insn_diff = end.insn_count - start.insn_count;
+        // store the difference in metrics if each field fits within 21 bits (21 * 3 = 63 bits total)
+        // otherwise, store the end metrics on the heap
+        if (ts_diff >> 21) == 0 && (cycles_diff >> 21) == 0 && (insn_diff >> 21) == 0 {
+            let packed_diff = (ts_diff << 42) | (cycles_diff << 21) | insn_diff;
+            MetricsRange {
+                start,
+                end: InlineOrPtr::new_inline(packed_diff),
+            }
+        } else {
+            MetricsRange {
+                start,
+                end: InlineOrPtr::new_heap(*end),
+            }
         }
     }
 
     #[inline]
     pub fn total_time(&self) -> u64 {
-        self.ts_incr as u64
+        match self.end.as_enum() {
+            InlineOrPtrView::Inline(packed_diff) => {
+                return (packed_diff >> 42) & 0x1FFFFF;
+            }
+            InlineOrPtrView::Ptr(end_metrics) => {
+                return end_metrics.ts - self.start.ts;
+            }
+        }
     }
 
     #[inline]
     pub fn total_cycles(&self) -> u64 {
-        self.cycles_incr as u64
+        match self.end.as_enum() {
+            InlineOrPtrView::Inline(packed_diff) => {
+                return (packed_diff >> 21) & 0x1FFFFF;
+            }
+            InlineOrPtrView::Ptr(end_metrics) => {
+                return end_metrics.cycles - self.start.cycles;
+            }
+        }
     }
 
     #[inline]
     pub fn total_insn(&self) -> u64 {
-        self.insn_incr as u64
+        match self.end.as_enum() {
+            InlineOrPtrView::Inline(packed_diff) => {
+                return packed_diff & 0x1FFFFF;
+            }
+            InlineOrPtrView::Ptr(end_metrics) => {
+                return end_metrics.insn_count - self.start.insn_count;
+            }
+        }
     }
 
     #[inline]
     pub fn end(&self) -> Metrics {
+        let ts_diff = self.total_time();
+        let cycles_diff = self.total_cycles();
+        let insn_diff = self.total_insn();
         Metrics {
-            ts: self.start.ts + self.ts_incr as u64,
-            cycles: self.start.cycles + self.cycles_incr as u64,
-            insn_count: self.start.insn_count + self.insn_incr as u64,
+            ts: self.start.ts + ts_diff,
+            cycles: self.start.cycles + cycles_diff,
+            insn_count: self.start.insn_count + insn_diff,
         }
     }
 
@@ -309,5 +475,121 @@ impl Display for MetricsRange {
             end.cycles,
             end.insn_count
         )
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::trace::Trace;
+
+    use super::*;
+
+    #[test]
+    fn metric_range_inlined() {
+        let zero_range = MetricsRange::new(
+            Metrics {
+                ts: 0,
+                cycles: 1,
+                insn_count: 2,
+            },
+            &Metrics {
+                ts: 0,
+                cycles: 1,
+                insn_count: 2,
+            },
+        );
+        let max_inlined = MetricsRange::new(
+            Metrics {
+                ts: 0,
+                cycles: 1,
+                insn_count: 2,
+            },
+            &Metrics {
+                ts: 0x1fffff,
+                cycles: 0x1ffff + 1,
+                insn_count: 0x1ffff + 2,
+            },
+        );
+        assert_eq!(zero_range.total_time(), 0);
+        assert_eq!(zero_range.total_cycles(), 0);
+        assert_eq!(zero_range.total_insn(), 0);
+        assert_eq!(zero_range.end.bits, InlineOrPtr::<Metrics>::TAG_MASK);
+        assert_eq!(max_inlined.total_time(), 0x1fffff);
+        assert_eq!(max_inlined.total_cycles(), 0x1ffff);
+        assert_eq!(max_inlined.total_insn(), 0x1ffff);
+        let inlined_val = (0x1fffff << 42) | (0x1ffff << 21) | 0x1ffff;
+        assert_eq!(
+            max_inlined.end.bits,
+            InlineOrPtr::<Metrics>::TAG_MASK | (inlined_val << 1)
+        );
+    }
+
+    #[test]
+    fn metric_range_boxed() {
+        let min_boxed_end = Metrics {
+            ts: 0x1fffff + 1,
+            cycles: 0x1ffff + 2,
+            insn_count: 0x1ffff + 3,
+        };
+        let min_boxed = MetricsRange::new(
+            Metrics {
+                ts: 0,
+                cycles: 1,
+                insn_count: 2,
+            },
+            &min_boxed_end,
+        );
+        assert_eq!(min_boxed.total_time(), 0x1fffff + 1);
+        assert_eq!(min_boxed.total_cycles(), 0x1ffff + 1);
+        assert_eq!(min_boxed.total_insn(), 0x1ffff + 1);
+        assert!(!min_boxed.end.is_inline());
+        assert_eq!(
+            min_boxed.end.as_enum(),
+            InlineOrPtrView::Ptr(&min_boxed_end)
+        );
+    }
+
+    #[test]
+    fn metric_range_serialize_round_trip() {
+        let max_inlined = MetricsRange::new(
+            Metrics {
+                ts: 0,
+                cycles: 1,
+                insn_count: 2,
+            },
+            &Metrics {
+                ts: 0x1fffff,
+                cycles: 0x1ffff + 1,
+                insn_count: 0x1ffff + 2,
+            },
+        );
+        let min_boxed = MetricsRange::new(
+            Metrics {
+                ts: 0,
+                cycles: 1,
+                insn_count: 2,
+            },
+            &Metrics {
+                ts: 0x1fffff + 1,
+                cycles: 0x1ffff + 2,
+                insn_count: 0x1ffff + 3,
+            },
+        );
+
+        let config = Trace::bincode_config();
+
+        let max_inlined_bytes = bincode_next::serde::encode_to_vec(&max_inlined, config).unwrap();
+        let (max_inlined_deserialized, _) =
+            bincode_next::serde::decode_from_slice(&max_inlined_bytes, config).unwrap();
+        assert_eq!(max_inlined, max_inlined_deserialized);
+        assert!(max_inlined_deserialized.end.is_inline());
+
+        let min_boxed_bytes = bincode_next::serde::encode_to_vec(&min_boxed, config).unwrap();
+        let (min_boxed_deserialized, _) =
+            bincode_next::serde::decode_from_slice(&min_boxed_bytes, config).unwrap();
+        assert_eq!(min_boxed, min_boxed_deserialized);
+        assert!(!min_boxed_deserialized.end.is_inline());
+
+        assert!(max_inlined_bytes.len() <= min_boxed_bytes.len());
     }
 }

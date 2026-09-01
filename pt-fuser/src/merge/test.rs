@@ -14,14 +14,16 @@ const DUMMY_RANGE_END: Metrics = Metrics {
     cycles: 200,
     insn_count: 200,
 };
-const DUMMY_RANGE: MetricsRange = MetricsRange::new(
-    Metrics {
-        ts: 100,
-        cycles: 100,
-        insn_count: 100,
-    },
-    &DUMMY_RANGE_END,
-);
+const DUMMY_RANGE: LazyLock<MetricsRange> = LazyLock::new(|| {
+    MetricsRange::new(
+        Metrics {
+            ts: 100,
+            cycles: 100,
+            insn_count: 100,
+        },
+        &DUMMY_RANGE_END,
+    )
+});
 
 const DUMMY_SYMBOL: LazyLock<Arc<SymbolInfo>> = LazyLock::new(|| {
     Arc::new(SymbolInfo {
@@ -41,7 +43,7 @@ fn new_trace(root: Frame) -> Trace {
     Trace::new(SYMBOLS.clone(), root, vec![])
 }
 
-const DUMMY_FRAME: LazyLock<Frame> = LazyLock::new(|| new_frame(DUMMY_RANGE));
+const DUMMY_FRAME: LazyLock<Frame> = LazyLock::new(|| new_frame(DUMMY_RANGE.clone()));
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct TestLCS {
@@ -62,7 +64,7 @@ impl merge::Id for &TestLCS {
 
 // special symbol called "[pause]" represents a pause chunk
 fn produce_chunks_from_symbols(symbols: &[&str]) -> Frame {
-    let mut frame = new_frame(DUMMY_RANGE);
+    let mut frame = new_frame(DUMMY_RANGE.clone());
     for (i, &symbol) in symbols.iter().enumerate() {
         let range = MetricsRange::new(
             Metrics::new(100 + i as u64, 100 + i as u64, 100 + i as u64),
