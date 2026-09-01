@@ -58,19 +58,19 @@ perf --no-pager script -i <PERF_FILE> --itrace=bei0ns --dlfilter=./target/releas
 
 - `TRACE_LIMIT`: an optional, numeric argument that limits the number of traces produced.
 
-**Note**: All produced trace files are compressed with gzip.
+**Note**: All produced trace files are compressed with zstd.
 
 ### 3. Filtering out outliers in latency/error count
 
 First, create a histogram of latencies or error counts across all your traces:
 
 ```bash
-cargo run --bin histogram -- --gzip <lantency|errors|interrupts> </path/to/traces/*>
+cargo run --bin histogram -- --compressed <lantency|errors|interrupts> </path/to/traces/*>
 ```
 
 - `latency` will create a histogram of latencies (in nanoseconds). `errors` will create a histogram of Intel PT decoding errors, typically lost data due to buffer overflow. `interrupts` will create a histogram of the number of times the trace was paused while the CPU serviced an interrupt.
 - `</path/to/traces/*>` is a list of trace files to be analyzed for the histogram
-- `--gzip` will uncompress the input file before trying to read it
+- `--compressed` will uncompress the input file before trying to read it
 
 Then, you can develop a set of filters that excludes any perceived outliers. Each filter has the form:
 
@@ -85,7 +85,7 @@ Then, you can develop a set of filters that excludes any perceived outliers. Eac
 You can preview the effect of a filter by re-running the histogram command with the `--filter` option:
 
 ```bash
-cargo run --bin histogram -- --gzip <lantency|errors> </path/to/traces/*> --filter <FILTER1> --filter <FILTER2> ...
+cargo run --bin histogram -- --compressed <lantency|errors> </path/to/traces/*> --filter <FILTER1> --filter <FILTER2> ...
 ```
 
 ### 4. Merge multiple traces into one averaged trace
@@ -93,13 +93,13 @@ cargo run --bin histogram -- --gzip <lantency|errors> </path/to/traces/*> --filt
 Merge multiple `pt-fuser` traces into a single trace, which does its best to extract a common sequence of function calls and averages the latencies of them:
 
 ```bash
-cargo run --bin merge -- --gzip --filter <FILTER1> --filter <FILTER2> <OUTPUT_FILE> </path/to/traces/*>
+cargo run --bin merge -- --compressed --filter <FILTER1> --filter <FILTER2> <OUTPUT_FILE> </path/to/traces/*>
 ```
 
-- `OUTPUT_FILE` is the file where the merged trace will be written to. (will be gzip compressed)
+- `OUTPUT_FILE` is the file where the merged trace will be written to. (will be zstd compressed)
 - `</path/to/traces/*>` is a list of trace files to merge
 - `--filter` is optional and can be repeated multiple times to exclude some of the input traces
-- `--gzip` will uncompress the input file before trying to read it
+- `--compressed` will uncompress the input file before trying to read it
 
 ### 5. Compare traces against each other and find candidate regressions
 
@@ -110,10 +110,10 @@ cargo run --bin merge -- --gzip --filter <FILTER1> --filter <FILTER2> <OUTPUT_FI
 Convert a particular `pt-fuser` trace to a trace that can be viewed in https://ui.perfetto.dev/:
 
 ```bash
-cargo run --bin convert_perfetto -- --gzip <INPUT_FILE> <OUTPUT_FILE>
+cargo run --bin convert_perfetto -- --compressed <INPUT_FILE> <OUTPUT_FILE>
 ```
 
-- `--gzip` will uncompress the input file before trying to read it
+- `--compressed` will uncompress the input file before trying to read it
 
 ## Versioning
 

@@ -334,20 +334,22 @@ fn find_event() {
 }
 
 #[test]
-fn serialize_round_trip_nogzip() {
+fn serialize_round_trip_nocompress() {
     let trace = test_trace();
-    let data = trace.bin_serialize(false).unwrap();
-    let deserialized = Trace::bin_deserialize(&data, false).unwrap();
+    let mut data_buf = Vec::new();
+    trace.bin_serialize(&mut data_buf, false).unwrap();
+    let deserialized = Trace::bin_deserialize(&mut data_buf.as_slice(), false).unwrap();
 
     assert_eq!(deserialized.root_frame().chunks().count(), 5);
     assert!(deserialized.root_frame().check_invariant());
 }
 
 #[test]
-fn serialize_round_trip_gzip() {
+fn serialize_round_trip_compress() {
     let trace = test_trace();
-    let data = trace.bin_serialize(true).unwrap();
-    let deserialized = Trace::bin_deserialize(&data, true).unwrap();
+    let mut data_buf = Vec::new();
+    trace.bin_serialize(&mut data_buf, true).unwrap();
+    let deserialized = Trace::bin_deserialize(&mut data_buf.as_slice(), true).unwrap();
 
     assert_eq!(deserialized.root_frame().chunks().count(), 5);
     assert!(deserialized.root_frame().check_invariant());

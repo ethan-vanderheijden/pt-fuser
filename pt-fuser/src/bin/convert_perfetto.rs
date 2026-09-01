@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs::File, io::BufReader};
 
 use clap::Parser;
 use pt_fuser::{
@@ -13,9 +13,9 @@ struct Cli {
     #[clap(
         long,
         default_value_t = false,
-        help = "Whether the input trace file is gzipped"
+        help = "Whether the input trace file is compressed (zstd)"
     )]
-    gzip: bool,
+    compressed: bool,
     #[clap(
         long,
         default_value_t = PauseRenderOption::Gap,
@@ -29,9 +29,10 @@ fn main() {
     let cli = Cli::parse();
 
     println!("Reading trace file...");
-    let trace_data = fs::read(cli.input).expect("Failed to read pt-fuser trace file");
-    let trace =
-        Trace::bin_deserialize(&trace_data, cli.gzip).expect("pt-fuser trace file is malformed");
+    let trace_data = File::open(cli.input).expect("Failed to read pt-fuser trace file");
+    let mut trace_data = BufReader::with_capacity(64 * 1024, trace_data);
+    let trace = Trace::bin_deserialize(&mut trace_data, cli.compressed)
+        .expect("pt-fuser trace file is malformed");
 
     println!("Converting trace file... Ctrl-C to end conversion early.");
 

@@ -1,4 +1,8 @@
-use std::process::ExitCode;
+use std::{
+    fs::File,
+    io::{BufReader, BufWriter},
+    process::ExitCode,
+};
 
 use clap::Parser;
 use pt_fuser::{
@@ -15,9 +19,9 @@ struct Cli {
     #[clap(
         long,
         default_value_t = false,
-        help = "Whether the input trace files are gzipped"
+        help = "Whether the input trace files are compressed (zstd)"
     )]
-    gzip: bool,
+    compressed: bool,
     #[clap(
         long,
         default_value_t = false,
@@ -49,8 +53,10 @@ fn main() -> ExitCode {
         .input
         .par_iter()
         .map(|input| {
-            let trace_data = std::fs::read(input).expect("Failed to read pt-fuser trace file");
-            Trace::bin_deserialize(&trace_data, cli.gzip).expect("pt-fuser trace file is malformed")
+            let trace_data = File::open(input).expect("Failed to read pt-fuser trace file");
+            let mut trace_data = BufReader::with_capacity(64 * 1024, trace_data);
+            Trace::bin_deserialize(&mut trace_data, cli.compressed)
+                .expect("pt-fuser trace file is malformed")
         })
         .collect::<Vec<Trace>>();
 
@@ -82,10 +88,11 @@ fn main() -> ExitCode {
     } else {
         merge::merge_traces(&traces_ref, None)
     };
-    let result_data = merged_trace
-        .bin_serialize(true)
+    let output_file = File::create(cli.output).expect("Failed to create output file");
+    let mut output_file = BufWriter::with_capacity(64 * 1024, output_file);
+    merged_trace
+        .bin_serialize(&mut output_file, true)
         .expect("Failed to serialize merge trace");
-    std::fs::write(cli.output, result_data).expect("Failed to write merged trace to file");
 
     ExitCode::SUCCESS
 }

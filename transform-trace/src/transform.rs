@@ -1,5 +1,12 @@
 use std::{
-    collections::HashMap, fs, num::NonZero, os::raw::c_void, path::Path, sync::OnceLock, thread,
+    collections::HashMap,
+    fs::{self, File},
+    io::BufWriter,
+    num::NonZero,
+    os::raw::c_void,
+    path::Path,
+    sync::OnceLock,
+    thread,
 };
 
 use pt_fuser::trace::{
@@ -78,15 +85,17 @@ fn export_trace(output_dir: &str, trace_num: u32, tid: i32, trace: Trace) {
             )
         })
         .execute(move || {
-            let binary_encoded = trace
-                .bin_serialize(true)
-                .expect("Failed to binary encode trace");
             if let Some(parent) = path.parent()
                 && parent.components().next().is_some()
             {
                 fs::create_dir_all(parent).expect("Failed to create output directory");
             }
-            fs::write(path, binary_encoded).expect("Failed to write trace file");
+
+            let output_file = File::create(&path).expect("Failed to create output file");
+            let mut output_file = BufWriter::with_capacity(64 * 1024, output_file);
+            trace
+                .bin_serialize(&mut output_file, true)
+                .expect("Failed to binary encode trace");
 
             info!("Finished exporting: {}", path2.display());
         });

@@ -450,10 +450,7 @@ fn constrain_metrics(
     end.cycles = min(end.cycles, max_metrics.cycles);
     end.insn_count = min(end.insn_count, max_metrics.insn_count);
 
-    if start.ts <= end.ts
-        && start.cycles <= end.cycles
-        && start.insn_count <= end.insn_count
-    {
+    if start.ts <= end.ts && start.cycles <= end.cycles && start.insn_count <= end.insn_count {
         return Some(MetricsRange::new(start, &end));
     } else {
         None
