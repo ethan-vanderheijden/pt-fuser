@@ -1,3 +1,5 @@
+use std::{fs::File, io::BufReader};
+
 use clap::{Parser, ValueEnum};
 use pt_fuser::{
     analysis::{
@@ -24,9 +26,9 @@ struct Cli {
     #[clap(
         long,
         default_value_t = false,
-        help = "Whether the input trace files are gzipped"
+        help = "Whether the input trace files are compressed (zstd)"
     )]
-    gzip: bool,
+    compressed: bool,
     #[cfg(feature = "gui")]
     #[clap(
         long,
@@ -93,8 +95,10 @@ fn main() {
         .input_files
         .par_iter()
         .map(|input| {
-            let trace_data = std::fs::read(input).expect("Failed to read pt-fuser trace file");
-            Trace::bin_deserialize(&trace_data, cli.gzip).expect("pt-fuser trace file is malformed")
+            let trace_data = File::open(input).expect("Failed to read pt-fuser trace file");
+            let mut trace_data = BufReader::with_capacity(64 * 1024, trace_data);
+            Trace::bin_deserialize(&mut trace_data, cli.compressed)
+                .expect("pt-fuser trace file is malformed")
         })
         .collect::<Vec<Trace>>();
 

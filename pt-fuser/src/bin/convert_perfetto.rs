@@ -1,7 +1,10 @@
-use std::fs;
+use std::{fs::File, io::BufReader};
 
 use clap::Parser;
-use pt_fuser::{perfetto, trace::Trace};
+use pt_fuser::{
+    perfetto::{self, PauseRenderOption},
+    trace::Trace,
+};
 
 #[derive(Parser)]
 #[command(about = "Converts a trace from pt-fuser representation to a Perfetto trace")]
@@ -10,19 +13,28 @@ struct Cli {
     #[clap(
         long,
         default_value_t = false,
-        help = "Whether the input trace file is gzipped"
+        help = "Whether the input trace file is compressed (zstd)"
     )]
-    gzip: bool,
+    compressed: bool,
+    #[clap(
+        long,
+        default_value_t = PauseRenderOption::Gap,
+        help = "Whether to render pauses in the trace as gaps or block named '--pause--'"
+    )]
+    render_pauses: PauseRenderOption,
     output: String,
 }
 
 fn main() {
     let cli = Cli::parse();
 
-    let trace_data = fs::read(cli.input).expect("Failed to read pt-fuser trace file");
-    let trace =
-        Trace::bin_deserialize(&trace_data, cli.gzip).expect("pt-fuser trace file is malformed");
-    let perfetto_data = perfetto::convert_to_perfetto(&trace);
+    println!("Reading trace file...");
+    let trace_data = File::open(cli.input).expect("Failed to read pt-fuser trace file");
+    let mut trace_data = BufReader::with_capacity(64 * 1024, trace_data);
+    let trace = Trace::bin_deserialize(&mut trace_data, cli.compressed)
+        .expect("pt-fuser trace file is malformed");
 
-    fs::write(cli.output, perfetto_data).expect("Failed to write perfetto trace to file");
+    println!("Converting trace file... Ctrl-C to end conversion early.");
+
+    perfetto::convert_to_perfetto(&trace, &cli.output, cli.render_pauses);
 }

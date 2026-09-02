@@ -5,10 +5,13 @@ pub mod trace_error;
 #[cfg(test)]
 mod test;
 
-use std::{fmt::Display, io::Read, sync::Arc};
+use std::{
+    fmt::Display,
+    io::{Read, Write},
+    sync::Arc,
+};
 
-use flate2::Compression;
-use flexbuffers::FlexbufferSerializer;
+use bincode_next::config;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize, de::Error as DeError, ser::Error as SerError};
 use thin_vec::ThinVec;
@@ -381,33 +384,52 @@ impl Trace {
         Ok((major_version, minor_version))
     }
 
-    pub fn bin_serialize(&self, gzip: bool) -> Result<Vec<u8>, flexbuffers::SerializationError> {
+    fn bincode_config() -> config::Configuration {
+        config::standard()
+    }
+
+    pub fn bin_serialize(
+        &self,
+        writer: &mut impl Write,
+        compress: bool,
+    ) -> Result<(), bincode_next::error::EncodeError> {
         let (major, minor) =
-            Self::get_major_minor().map_err(flexbuffers::SerializationError::custom)?;
-        let mut data = major
+            Self::get_major_minor().map_err(bincode_next::error::EncodeError::custom)?;
+        let data = major
             .to_be_bytes()
             .iter()
             .chain(minor.to_be_bytes().iter())
             .chain(Self::VERSION_DELIMITER.to_be_bytes().iter())
             .copied()
             .collect::<Vec<u8>>();
+        writer
+            .write_all(&data)
+            .map_err(bincode_next::error::EncodeError::custom)?;
 
-        let mut serializer = FlexbufferSerializer::new();
-        self.serialize(&mut serializer)?;
-        if gzip {
-            let encoded = serializer.take_buffer();
-            let mut encoder = flate2::read::GzEncoder::new(&encoded[..], Compression::default());
-            let mut result = Vec::new();
-            encoder.read_to_end(&mut result).unwrap();
-            data.extend(result);
-            Ok(data)
+        if compress {
+            let mut zstd_compressor = zstd::stream::Encoder::new(writer, 0)
+                .map_err(bincode_next::error::EncodeError::custom)?;
+            bincode_next::serde::encode_into_std_write(
+                self,
+                &mut zstd_compressor,
+                Self::bincode_config(),
+            )?;
+            let remaining_writer = zstd_compressor
+                .finish()
+                .map_err(bincode_next::error::EncodeError::custom)?;
+            remaining_writer
+                .flush()
+                .map_err(bincode_next::error::EncodeError::custom)?;
         } else {
-            data.extend(serializer.take_buffer());
-            Ok(data)
+            bincode_next::serde::encode_into_std_write(self, writer, Self::bincode_config())?;
+            writer
+                .flush()
+                .map_err(bincode_next::error::EncodeError::custom)?;
         }
+        Ok(())
     }
 
-    fn deserialize_trace(data: &[u8]) -> Result<Self, flexbuffers::DeserializationError> {
+    fn deserialize_trace(reader: &mut impl Read) -> Result<Self, bincode_next::error::DecodeError> {
         // Helper defs that mirror the serialized shape but are deserializable
         #[derive(Deserialize)]
         struct TraceDef {
@@ -431,16 +453,17 @@ impl Trace {
             Pause(MetricsRange),
         }
 
-        let traces_def: TraceDef = flexbuffers::from_slice(data)?;
+        let traces_def: TraceDef =
+            bincode_next::serde::decode_from_std_read(reader, Self::bincode_config())?;
 
         let symbols: Vec<Arc<SymbolInfo>> = traces_def.symbols.into_iter().map(Arc::new).collect();
 
         fn build_frame(
             def: FrameDef,
             symbols: &Vec<Arc<SymbolInfo>>,
-        ) -> Result<Frame, flexbuffers::DeserializationError> {
+        ) -> Result<Frame, bincode_next::error::DecodeError> {
             if def.symbol_idx >= symbols.len() {
-                return Err(flexbuffers::DeserializationError::custom(format!(
+                return Err(bincode_next::error::DecodeError::custom(format!(
                     "Invalid symbol index {} for frame, only {} symbols available",
                     def.symbol_idx,
                     symbols.len()
@@ -463,7 +486,7 @@ impl Trace {
                         }
                         StoredChunkDef::Pause(pause) => Ok(StoredChunk::Pause(pause)),
                     })
-                    .collect::<Result<_, flexbuffers::DeserializationError>>()?,
+                    .collect::<Result<_, bincode_next::error::DecodeError>>()?,
             };
 
             Ok(frame)
@@ -479,47 +502,47 @@ impl Trace {
     }
 
     pub fn bin_deserialize(
-        data: &[u8],
-        gzip: bool,
-    ) -> Result<Self, flexbuffers::DeserializationError> {
+        reader: &mut impl Read,
+        decompress: bool,
+    ) -> Result<Self, bincode_next::error::DecodeError> {
+        let mut version_info = [0u8; 8];
+        reader
+            .read_exact(&mut version_info)
+            .map_err(bincode_next::error::DecodeError::custom)?;
+
         let (tool_major, tool_minor) =
-            Self::get_major_minor().map_err(flexbuffers::DeserializationError::custom)?;
-
-        if data.len() < 8 {
-            return Err(flexbuffers::DeserializationError::custom(
-                "Trace data is too short, it can't possible be correct!",
-            ));
-        }
-
-        let trace_major = u16::from_be_bytes([data[0], data[1]]);
-        let trace_minor = u16::from_be_bytes([data[2], data[3]]);
-        let trace_delimiter = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-        let data = &data[8..];
+            Self::get_major_minor().map_err(bincode_next::error::DecodeError::custom)?;
+        let trace_major = u16::from_be_bytes([version_info[0], version_info[1]]);
+        let trace_minor = u16::from_be_bytes([version_info[2], version_info[3]]);
+        let trace_delimiter = u32::from_be_bytes([
+            version_info[4],
+            version_info[5],
+            version_info[6],
+            version_info[7],
+        ]);
         if trace_delimiter != Self::VERSION_DELIMITER {
-            return Err(flexbuffers::DeserializationError::custom(
+            return Err(bincode_next::error::DecodeError::custom(
                 "Trace data is corrupted, version delimiter is incorrect!",
             ));
         }
         if trace_major != tool_major || trace_minor != tool_minor {
-            return Err(flexbuffers::DeserializationError::custom(format!(
+            return Err(bincode_next::error::DecodeError::custom(format!(
                 "Version mismatch: trace data is v{}.{} but tool is v{}.{}",
                 trace_major, trace_minor, tool_major, tool_minor
             )));
         }
 
-        let decoded_data = if gzip {
-            let mut decoder = flate2::read::GzDecoder::new(data);
-            let mut decoded = Vec::new();
-            decoder.read_to_end(&mut decoded).unwrap();
-            decoded
+        if decompress {
+            let mut zstd_decompressor = zstd::stream::Decoder::new(reader)
+                .map_err(bincode_next::error::DecodeError::custom)?;
+            Self::deserialize_trace(&mut zstd_decompressor)
         } else {
-            data.to_vec()
-        };
-        Self::deserialize_trace(&decoded_data)
+            Self::deserialize_trace(reader)
+        }
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Error {
     InvalidRange(MetricsRange),
     NotSorted,
