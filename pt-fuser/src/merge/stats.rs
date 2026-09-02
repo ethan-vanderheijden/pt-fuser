@@ -83,7 +83,6 @@ impl StatsProvider for RawLatencies {
 
 pub struct NoiseContribution {
     e2e_latencies: Vec<u64>,
-    e2e_stddev: f64,
 }
 
 impl StatsProvider for NoiseContribution {
@@ -92,13 +91,8 @@ impl StatsProvider for NoiseContribution {
             .iter()
             .map(|(_, trace)| trace.root_frame().metrics.total_time())
             .collect::<Vec<_>>();
-        let stats = analysis::Stats::from_data(latencies.iter().map(|&v| v as f64))?;
-        if stats.stddev == 0.0 {
-            return None;
-        }
         Some(NoiseContribution {
             e2e_latencies: latencies,
-            e2e_stddev: stats.stddev,
         })
     }
 
@@ -107,26 +101,28 @@ impl StatsProvider for NoiseContribution {
     }
 
     fn compute(&self, indexed_frames: &[(usize, &Frame)]) -> Vec<(String, Annotation)> {
-        // A frame that did not occur in a trace already completes instantaneously in that trace,
-        // so its latency is zero rather than a reason to remove the trace from the population.
-        let mut frame_latencies = vec![0.0; self.e2e_latencies.len()];
-        for (idx, frame) in indexed_frames {
-            frame_latencies[*idx] = frame.metrics.total_time() as f64;
+        let mut root_latencies = Vec::with_capacity(indexed_frames.len());
+        for (idx, _) in indexed_frames {
+            root_latencies.push(self.e2e_latencies[*idx]);
         }
 
-        let latency_without_frame = self
-            .e2e_latencies
-            .iter()
-            .zip(frame_latencies)
-            .map(|(e2e, frame)| *e2e as f64 - frame);
-        if let Some(stats) = analysis::Stats::from_data(latency_without_frame) {
-            // NC(A) = (SD(LE2E) - SD(LE2E - LA)) / SD(LE2E)
-            vec![(
-                ANNOTATION_NOISE_CONTRIBUTION_NAME.to_string(),
-                Annotation::Double(1.0 - stats.stddev / self.e2e_stddev),
-            )]
-        } else {
-            Vec::new()
+        if let Some(root_stats) =
+            analysis::Stats::from_data(root_latencies.iter().map(|v| *v as f64))
+            && root_stats.stddev > 0.0
+        {
+            for i in 0..root_latencies.len() {
+                root_latencies[i] -= indexed_frames[i].1.metrics.total_time();
+            }
+            if let Some(new_stats) =
+                analysis::Stats::from_data(root_latencies.iter().map(|v| *v as f64))
+            {
+                // NC(A) = (SD(LE2E) - SD(LE2E - LA)) / SD(LE2E)
+                return vec![(
+                    ANNOTATION_NOISE_CONTRIBUTION_NAME.to_string(),
+                    Annotation::Double(1.0 - new_stats.stddev / root_stats.stddev),
+                )];
+            }
         }
+        Vec::new()
     }
 }

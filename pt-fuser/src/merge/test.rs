@@ -607,6 +607,10 @@ fn merge_frame_with_anotations() {
         root_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME],
         Annotation::Double(1.0)
     );
+    assert_eq!(
+        root_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME],
+        Annotation::Double(1.0)
+    );
 
     assert_eq!(child_stats[ANNOTATION_COUNT_NAME], Annotation::Uint64(10));
     assert_eq!(child_stats["Min"], Annotation::Double(11.0));
@@ -625,15 +629,10 @@ fn merge_frame_with_anotations() {
         }
         _ => panic!("Expected std dev annotation to be a double"),
     }
-    match &child_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME] {
-        Annotation::Double(noise_contribution) => {
-            assert!(
-                (noise_contribution - 0.5717235169650965).abs() < 1e-12,
-                "Expected NC to include zero latency for the two traces without the child"
-            );
-        }
-        _ => panic!("Expected noise contribution annotation to be a double"),
-    }
+    assert_eq!(
+        child_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME],
+        Annotation::Double(0.5)
+    );
 }
 
 #[test]
@@ -669,9 +668,15 @@ fn merge_frame_omits_annotations_when_not_requested() {
 }
 
 #[test]
-fn merge_frame_omits_noise_contribution_when_e2e_stddev_is_zero() {
-    let root_frames = (0..10)
-        .map(|i| produce_frames_from_metrics((0, 100), &[(10, 20 + i, Some("a"))]))
+fn merge_frame_omits_noise_contribution_when_root_stddev_is_zero() {
+    let root_frames = (0..11)
+        .map(|i| {
+            if i == 0 {
+                produce_frames_from_metrics((0, 110), &[])
+            } else {
+                produce_frames_from_metrics((0, 100), &[(10, 20 + i, Some("a"))])
+            }
+        })
         .collect::<Vec<_>>();
     let traces = root_frames
         .iter()
@@ -687,17 +692,34 @@ fn merge_frame_omits_noise_contribution_when_e2e_stddev_is_zero() {
         .iter()
         .map(|(name, trace)| (name.as_str(), *trace))
         .collect::<Vec<_>>();
-    assert!(NoiseContribution::prepare(&named_traces).is_none());
+    let basic_stats = Box::new(BasicStats::prepare(&named_traces).unwrap());
+    let noise_contrib = Box::new(NoiseContribution::prepare(&named_traces).unwrap());
+
+    let merged = merge::merge_traces(
+        &traces.iter().collect::<Vec<_>>(),
+        vec![noise_contrib, basic_stats],
+    );
+    let root_annotations = merged.root_frame().annotations.as_ref().unwrap();
+    let root_stats = match &root_annotations[ANNOTATION_STATS_CATEGORY] {
+        Annotation::Map(stats) => stats,
+        _ => panic!("Expected stats annotation to be a map"),
+    };
+    assert!(root_stats.contains_key(ANNOTATION_NOISE_CONTRIBUTION_NAME));
+
+    let child = merged.root_frame().chunks().nth(1).unwrap();
+    println!("{:?}", extract_frame_chunk(&child).annotations);
+    let child_annotations = extract_frame_chunk(&child).annotations.as_ref().unwrap();
+    assert!(!child_annotations.contains_key(ANNOTATION_NOISE_CONTRIBUTION_NAME));
 }
 
 #[test]
 fn merge_frame_adds_noise_contribution_to_nested_frame_with_missing_traces() {
-    let root_frames = (0..10)
+    let root_frames = (0..13)
         .map(|i| {
-            let mut outer = if i < 7 {
-                produce_frames_from_metrics((10, 80), &[(20, 30 + i, Some("a"))])
+            let mut outer = if i < 10 {
+                produce_frames_from_metrics((10, 80 + i * 3), &[(20, 30 + i, Some("a"))])
             } else {
-                produce_frames_from_metrics((10, 80), &[])
+                produce_frames_from_metrics((10, 80 + i * 3), &[])
             };
             outer.symbol = Arc::new(SymbolInfo {
                 name: "outer".to_string(),
@@ -707,7 +729,7 @@ fn merge_frame_adds_noise_contribution_to_nested_frame_with_missing_traces() {
 
             let mut root = new_frame(MetricsRange::new(
                 Metrics::constant(0),
-                &Metrics::constant(100 + 2 * i),
+                &Metrics::constant(100 + 3 * i),
             ));
             root.add_child(outer).unwrap();
             root
@@ -732,6 +754,16 @@ fn merge_frame_adds_noise_contribution_to_nested_frame_with_missing_traces() {
     let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), vec![noise_contrib]);
     let outer = merged.root_frame().chunks().nth(1).unwrap();
     let outer = extract_frame_chunk(&outer);
+    let outer_annotations = outer.annotations.as_ref().unwrap();
+    let outer_stats = match &outer_annotations[ANNOTATION_STATS_CATEGORY] {
+        Annotation::Map(stats) => stats,
+        _ => panic!("Expected outer stats annotation to be a map"),
+    };
+    assert_eq!(
+        outer_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME],
+        Annotation::Double(1.0)
+    );
+
     let nested = outer.chunks().nth(1).unwrap();
     let nested = extract_frame_chunk(&nested);
     let nested_annotations = nested.annotations.as_ref().unwrap();
@@ -740,7 +772,13 @@ fn merge_frame_adds_noise_contribution_to_nested_frame_with_missing_traces() {
         _ => panic!("Expected nested stats annotation to be a map"),
     };
     match &nested_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME] {
-        Annotation::Double(noise_contribution) => assert!(noise_contribution.is_finite()),
+        Annotation::Double(noise_contribution) => {
+            assert_eq!(
+                (noise_contribution * 100.0).round(),
+                33.0,
+                "Expected std dev to be approximately 0.33"
+            );
+        }
         _ => panic!("Expected nested noise contribution annotation to be a double"),
     }
 }
