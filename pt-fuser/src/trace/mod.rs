@@ -216,6 +216,13 @@ impl Frame {
         self.insert_chunk(StoredChunk::Pause(pause))
     }
 
+    pub fn get_or_default_annotation(&mut self) -> &mut IndexMap<String, Annotation> {
+        if self.annotations.is_none() {
+            self.annotations = Some(Box::new(IndexMap::new()));
+        }
+        self.annotations.as_mut().unwrap()
+    }
+
     #[inline]
     pub fn chunks(&'_ self) -> impl Iterator<Item = Chunk<'_>> {
         ChunkIterator::new(&self.metrics, &self.chunks)
