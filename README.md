@@ -117,4 +117,17 @@ cargo run --bin convert_perfetto -- --compressed <INPUT_FILE> <OUTPUT_FILE>
 
 ## Versioning
 
-In our versioning scheme "vX.Y.Z", "X.Y" refers to the version of the trace format. Every time the trace format changes in a backwards-incompatible way, we change "X.Y". If you try to use our tools with a trace file of an incompatible version, you will get a warning message.
+All three binaries (`merge`, `histogram`, and `convert_perfetto`) support `-v`
+and `--version`. They print the project name, the tool name, the Cargo package
+version, and the short Git commit of the build, for example:
+
+```text
+pt-fuser merge 0.3.0 (03cb739)
+```
+
+The version comes from `Cargo.toml` and the commit is embedded at build time.
+The commit is optional: a build from a source tree without Git metadata just
+prints `pt-fuser merge 0.3.0`. Setting `PT_FUSER_COMMIT` overrides the lookup,
+which is how the release workflow gives every target the same commit.
+
+In our versioning scheme "vX.Y.Z", "X.Y" refers to the version of the trace format. Every time the trace format changes in a backwards-incompatible way, we change "X.Y". If you try to use our tools with a trace file of an incompatible version, the file will be rejected with a version mismatch error.

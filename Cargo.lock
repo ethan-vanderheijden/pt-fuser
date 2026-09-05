@@ -2861,7 +2861,7 @@ dependencies = [
 
 [[package]]
 name = "pt-fuser"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bincode-next",
  "bloomfilter",
@@ -3654,7 +3654,7 @@ dependencies = [
 
 [[package]]
 name = "transform-trace"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bindgen",
  "pt-fuser",

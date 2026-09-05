@@ -20,7 +20,14 @@ enum Action {
 }
 
 #[derive(Parser)]
+#[command(
+    display_name = concat!("pt-fuser ", env!("CARGO_BIN_NAME")),
+    version = pt_fuser::VERSION,
+    disable_version_flag = true
+)]
 struct Cli {
+    #[arg(short = 'v', long, action = clap::ArgAction::Version, help = "Print version")]
+    version: Option<bool>,
     #[clap(value_enum, help = "The data to visualize")]
     action: Action,
     #[clap(

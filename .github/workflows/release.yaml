@@ -11,6 +11,10 @@ jobs:
   build-release:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    env:
+      # Every target builds the same commit, so all platforms embed the same
+      # version and no runner has to shell out to Git for it.
+      PT_FUSER_COMMIT: ${{ github.sha }}
     strategy:
       fail-fast: false
       matrix:
