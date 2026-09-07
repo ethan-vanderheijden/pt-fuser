@@ -20,6 +20,10 @@ enum Action {
 }
 
 #[derive(Parser)]
+#[command(
+    display_name = concat!("pt-fuser ", env!("CARGO_BIN_NAME")),
+    version = pt_fuser::VERSION,
+)]
 struct Cli {
     #[clap(value_enum, help = "The data to visualize")]
     action: Action,

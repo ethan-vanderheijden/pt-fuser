@@ -8,6 +8,10 @@ use pt_fuser::{
 
 #[derive(Parser)]
 #[command(about = "Converts a trace from pt-fuser representation to a Perfetto trace")]
+#[command(
+    display_name = concat!("pt-fuser ", env!("CARGO_BIN_NAME")),
+    version = pt_fuser::VERSION,
+)]
 struct Cli {
     input: String,
     #[clap(

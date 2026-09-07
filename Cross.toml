@@ -1,0 +1,4 @@
+# `cross` builds inside a container that does not inherit the runner's
+# environment, so the commit embedded in the version has to be forwarded in.
+[build.env]
+passthrough = ["PT_FUSER_COMMIT"]

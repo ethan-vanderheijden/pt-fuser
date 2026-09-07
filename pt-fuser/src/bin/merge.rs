@@ -18,6 +18,10 @@ use tracing::{Level, info};
 
 #[derive(Parser)]
 #[command(about = "Combines multiple pt-fuser traces into a single \"averaged\" trace")]
+#[command(
+    display_name = concat!("pt-fuser ", env!("CARGO_BIN_NAME")),
+    version = pt_fuser::VERSION,
+)]
 struct Cli {
     #[clap(
         long,
