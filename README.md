@@ -117,7 +117,7 @@ cargo run --bin convert_perfetto -- --compressed <INPUT_FILE> <OUTPUT_FILE>
 
 ## Versioning
 
-All three binaries (`merge`, `histogram`, and `convert_perfetto`) support `-v`
+All three binaries (`merge`, `histogram`, and `convert_perfetto`) support `-V`
 and `--version`. They print the project name, the tool name, the Cargo package
 version, and the short Git commit of the build, for example:
 

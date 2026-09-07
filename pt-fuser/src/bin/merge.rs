@@ -21,11 +21,8 @@ use tracing::{Level, info};
 #[command(
     display_name = concat!("pt-fuser ", env!("CARGO_BIN_NAME")),
     version = pt_fuser::VERSION,
-    disable_version_flag = true
 )]
 struct Cli {
-    #[arg(short = 'v', long, action = clap::ArgAction::Version, help = "Print version")]
-    version: Option<bool>,
     #[clap(
         long,
         default_value_t = false,
