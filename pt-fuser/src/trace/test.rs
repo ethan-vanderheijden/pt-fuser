@@ -354,3 +354,30 @@ fn serialize_round_trip_compress() {
     assert_eq!(deserialized.root_frame().chunks().count(), 5);
     assert!(deserialized.root_frame().check_invariant());
 }
+
+#[test]
+fn serialize_round_trip_compress_annotations() {
+    let mut trace = test_trace();
+    let root = &mut trace.root;
+    let mut inner_map = IndexMap::new();
+    inner_map.insert("x".to_string(), Annotation::String("y".to_string()));
+    let annotations = root.get_or_default_annotation();
+    annotations.insert("a".to_string(), Annotation::Bool(true));
+    annotations.insert(
+        "z".to_string(),
+        Annotation::Array(vec![Annotation::Int64(123), Annotation::Int64(456)]),
+    );
+    annotations.insert("b".to_string(), Annotation::Double(2.5));
+    annotations.insert("y".to_string(), Annotation::Map(inner_map));
+
+    let ground_truth = annotations.clone();
+
+    let mut data_buf = Vec::new();
+    trace.bin_serialize(&mut data_buf, true).unwrap();
+
+    let deserialized = Trace::bin_deserialize(&mut data_buf.as_slice(), true).unwrap();
+    let deserialized_root = &deserialized.root;
+    let deserialized_annotations = deserialized_root.annotations.as_ref().unwrap();
+    assert!(deserialized_annotations.keys().eq(ground_truth.keys()));
+    assert!(deserialized_annotations.values().eq(ground_truth.values()));
+}

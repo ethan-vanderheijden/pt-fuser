@@ -29,10 +29,12 @@ mod ordered_annotations_serde {
     where
         S: Serializer,
     {
-        match value {
-            Some(annotations) => indexmap::map::serde_seq::serialize(annotations, serializer),
-            None => serializer.serialize_none(),
-        }
+        #[derive(Serialize)]
+        struct Helper<'a>(
+            #[serde(with = "indexmap::map::serde_seq")] &'a IndexMap<String, Annotation>,
+        );
+
+        value.as_ref().map(|v| Helper(v)).serialize(serializer)
     }
 
     pub fn deserialize<'de, D>(
@@ -42,10 +44,10 @@ mod ordered_annotations_serde {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        struct SeqWrapper(#[serde(with = "indexmap::map::serde_seq")] IndexMap<String, Annotation>);
+        struct Helper(#[serde(with = "indexmap::map::serde_seq")] IndexMap<String, Annotation>);
 
-        let opt = Option::<SeqWrapper>::deserialize(deserializer)?;
-        Ok(opt.map(|wrapper| Box::new(wrapper.0)))
+        let helper = Option::deserialize(deserializer)?;
+        Ok(helper.map(|Helper(external)| Box::new(external)))
     }
 }
 
