@@ -29,10 +29,11 @@ struct Cli {
     action: Action,
     #[clap(
         long,
+        short = 'i',
         default_value_t = false,
         help = "Whether the input trace files are compressed (zstd)"
     )]
-    compressed: bool,
+    compressed_input: bool,
     #[cfg(feature = "gui")]
     #[clap(
         long,
@@ -101,7 +102,7 @@ fn main() {
         .map(|input| {
             let trace_data = File::open(input).expect("Failed to read pt-fuser trace file");
             let mut trace_data = BufReader::with_capacity(64 * 1024, trace_data);
-            Trace::bin_deserialize(&mut trace_data, cli.compressed)
+            Trace::bin_deserialize(&mut trace_data, cli.compressed_input)
                 .expect("pt-fuser trace file is malformed")
         })
         .collect::<Vec<Trace>>();

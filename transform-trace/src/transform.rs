@@ -52,6 +52,8 @@ enum BuilderState {
 pub(crate) struct State {
     sym_regex: Regex,
     output_dir: String,
+    compress_output: bool,
+    trace_options: FrameCompletionOptions,
     traces_limit: Option<u32>,
     trace_nums: HashMap<i32, u32>,
     builders: HashMap<i32, BuilderState>,
@@ -59,10 +61,18 @@ pub(crate) struct State {
 }
 
 impl State {
-    pub(crate) fn new(sym_regex: Regex, output_dir: String, traces_limit: Option<u32>) -> Self {
+    pub(crate) fn new(
+        sym_regex: Regex,
+        output_dir: String,
+        compress_output: bool,
+        trace_options: FrameCompletionOptions,
+        traces_limit: Option<u32>,
+    ) -> Self {
         Self {
             sym_regex,
             output_dir,
+            compress_output,
+            trace_options,
             traces_limit,
             trace_nums: HashMap::new(),
             builders: HashMap::new(),
@@ -71,7 +81,7 @@ impl State {
     }
 }
 
-fn export_trace(output_dir: &str, trace_num: u32, tid: i32, trace: Trace) {
+fn export_trace(output_dir: &str, compress_output: bool, trace_num: u32, tid: i32, trace: Trace) {
     let filename = format!("trace-{}-{}.bin", tid, trace_num);
     let path = Path::new(output_dir).join(filename);
     let path2 = path.clone();
@@ -94,7 +104,7 @@ fn export_trace(output_dir: &str, trace_num: u32, tid: i32, trace: Trace) {
             let output_file = File::create(&path).expect("Failed to create output file");
             let mut output_file = BufWriter::with_capacity(64 * 1024, output_file);
             trace
-                .bin_serialize(&mut output_file, true)
+                .bin_serialize(&mut output_file, compress_output)
                 .expect("Failed to binary encode trace");
 
             info!("Finished exporting: {}", path2.display());
@@ -134,12 +144,7 @@ fn process_return_event(
 ) -> Option<TraceBuilder> {
     for i in 1..=levels {
         builder = match builder
-            .complete_frame(
-                state.cur_metrics,
-                Some(FrameCompletionOptions {
-                    remove_plt_stubs: true,
-                }),
-            )
+            .complete_frame(state.cur_metrics, Some(state.trace_options))
             .expect("Failed to complete stack frame")
         {
             BuilderResult::Completed(trace) => {
@@ -156,7 +161,13 @@ fn process_return_event(
                         .occurences()
                         .len()
                 );
-                export_trace(&state.output_dir, *trace_num, sample.tid, trace);
+                export_trace(
+                    &state.output_dir,
+                    state.compress_output,
+                    *trace_num,
+                    sample.tid,
+                    trace,
+                );
                 *trace_num += 1;
 
                 if i != levels {

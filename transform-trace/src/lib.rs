@@ -2,19 +2,47 @@
 mod perf;
 mod transform;
 
-use pt_fuser::trace::SymbolInfo;
+use clap::{CommandFactory, Parser};
+use pt_fuser::trace::{SymbolInfo, builder::FrameCompletionOptions};
 use regex::Regex;
 use std::os::raw::{c_char, c_int, c_void};
 use tracing::{Level, error};
 
 use crate::transform::State;
 
-const USAGE: &str =
-    "Usage: --dlarg <symbol regex> --dlarg <output_dir> [--dlarg <max # of traces>]";
 const SHORT_DESC: &core::ffi::CStr = c"Parses an Intel PT trace into pt-fuser format for later aggregating, comparing, and exporting.";
-const LONG_DESC: &core::ffi::CStr = c"Usage: --dlarg <symbol regex> --dlarg <output_dir> [--dlarg <max # of traces>]. \
+const LONG_DESC: &core::ffi::CStr = c"Usage: --dlarg [OPTIONS] --dlarg <symbol regex> --dlarg <output_dir> \
     Only processes trace data for a function matching the given regex and all its sub-calls. \
     Each function invocation is a separate trace file written into the output directory as trace-<tid>-<n>.flex.gz";
+
+#[derive(Parser)]
+#[command(
+    about = "Converts a trace from pt-fuser representation to a Perfetto trace",
+    override_usage = concat!(env!("CARGO_PKG_NAME"), " --dlarg [OPTIONS] --dlarg <symbol regex> --dlarg <output_dir>")
+)]
+pub struct Args {
+    symbol_regex: String,
+    output_dir: String,
+    #[clap(
+        long,
+        default_value_t = 0,
+        help = "Maximum number of traces to process (0 = no limit)"
+    )]
+    max_traces: usize,
+    #[clap(
+        long,
+        default_value_t = true,
+        help = "Remove @plt stub functions from cluttering up the trace"
+    )]
+    remove_plt_stubs: bool,
+    #[clap(
+        long,
+        short = 'o',
+        default_value_t = true,
+        help = "Whether to compress the output trace files (zstd)"
+    )]
+    compress_output: bool,
+}
 
 #[unsafe(no_mangle)]
 pub static mut perf_dlfilter_fns: std::mem::MaybeUninit<perf::perf_dlfilter_fns> =
@@ -101,38 +129,38 @@ pub unsafe extern "C" fn start(raw_state: &mut *mut c_void, ctx: *mut c_void) ->
     unsafe {
         let argv = (perf_dlfilter_fns.assume_init().args.unwrap())(ctx, &mut argc as *mut c_int);
         if argv.is_null() {
-            error!("Failed to retrieve dlargs. {}", USAGE);
+            let mut args = Args::command();
+            error!(
+                "Failed to retrieve dlargs. {}",
+                args.render_usage().to_string()
+            );
             return -1;
         }
         args = std::slice::from_raw_parts(argv, argc as usize);
     }
 
-    if argc != 2 && argc != 3 {
-        error!("Expected two or three arguments. {}", USAGE);
-        return -1;
-    }
+    let args = Args::parse_from(std::iter::once(env!("CARGO_PKG_NAME").to_string()).chain(
+        args.iter().map(|s| {
+            let arg1 = unsafe { std::ffi::CStr::from_ptr(*s).to_bytes() };
+            String::from_utf8(arg1.to_vec()).expect("Invalid UTF-8 in argument")
+        }),
+    ));
 
-    let arg1 = unsafe { std::ffi::CStr::from_ptr(args[0]).to_bytes() };
-    let arg2 = unsafe { std::ffi::CStr::from_ptr(args[1]).to_bytes() };
-
-    let arg1_string = String::from_utf8(arg1.to_vec()).expect("Invalid UTF-8 in first arg");
-    let arg2_string = String::from_utf8(arg2.to_vec()).expect("Invalid UTF-8 in second arg");
-
-    let max_traces = if argc == 3 {
-        let arg3 = unsafe { std::ffi::CStr::from_ptr(args[2]).to_bytes() };
-        Some(
-            String::from_utf8(arg3.to_vec())
-                .expect("Invalid UTF-8 in third arg")
-                .parse::<u32>()
-                .expect("Third argument must be a number"),
-        )
-    } else {
+    let max_traces = if args.max_traces == 0 {
         None
+    } else {
+        Some(args.max_traces as u32)
+    };
+
+    let trace_options = FrameCompletionOptions {
+        remove_plt_stubs: args.remove_plt_stubs,
     };
 
     let state = Box::new(State::new(
-        Regex::new(&arg1_string).expect("Provided regex is invalid"),
-        arg2_string,
+        Regex::new(&args.symbol_regex).expect("Provided regex is invalid"),
+        args.output_dir,
+        args.compress_output,
+        trace_options,
         max_traces,
     ));
     *raw_state = Box::into_raw(state) as *mut c_void;

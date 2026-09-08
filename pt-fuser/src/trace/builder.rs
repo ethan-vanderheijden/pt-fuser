@@ -4,6 +4,7 @@ use bloomfilter::Bloom;
 
 use crate::trace::{self, Event, Frame, Metrics, MetricsRange, StoredChunk, SymbolInfo, Trace};
 
+#[derive(Clone, Copy)]
 pub struct FrameCompletionOptions {
     // sometimes, calling a function first goes to the Procedure Linkage Table (PLT) stub, which
     // immediately jumps to the target function. We can remove the PLT stub frame from the trace.
