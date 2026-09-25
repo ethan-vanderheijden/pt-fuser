@@ -26,9 +26,11 @@ const FREQUENT_FRAME_THRESH: f32 = 0.7;
 ///
 /// If `trace_ids` is provided, it must be a parallel list of unique identifiers for each trace. These
 /// IDs will be used to add raw data from the merging algorithm as an annotation to the merged trace.
-/// If `record_noise_contribution` is true, each merged frame will include its noise contribution in
-/// the merging stats annotation, provided that the end-to-end standard deviation is defined and
-/// nonzero.
+/// If a `NoiseContribution` stats generator is provided, each merged frame will include its noise
+/// contribution in the merging stats annotation, provided that the end-to-end standard deviation is
+/// defined and nonzero. In `inclusive` mode (the default) a frame's latency includes its child frames;
+/// in `exclusive` mode the latencies of its direct child frames (in each original trace) are
+/// subtracted.
 ///
 /// We will consider the case where we are merging multiple stack frames.
 /// Each stack frame is a sequence of child frames, e.g. a() := [f(), g(), f(), h()].

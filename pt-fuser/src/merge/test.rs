@@ -6,7 +6,7 @@ use crate::{
         stats::{
             ANNOTATION_COUNT_NAME, ANNOTATION_NOISE_CONTRIBUTION_NAME,
             ANNOTATION_RAW_LATENCY_CATEGORY, ANNOTATION_STATS_CATEGORY, BasicStats,
-            NoiseContribution, RawLatencies, StatsProvider,
+            NoiseContribution, NoiseContributionMode, RawLatencies, StatsProvider,
         },
     },
     trace::{
@@ -782,6 +782,80 @@ fn merge_frame_adds_noise_contribution_to_nested_frame_with_missing_traces() {
             );
         }
         _ => panic!("Expected nested noise contribution annotation to be a double"),
+    }
+}
+
+#[test]
+fn merge_frame_adds_exclusive_noise_contribution() {
+    // E2E latencies: 100, 110, ..., 210
+    // child "a" latencies: 10, 15, ..., 65
+    // pause latencies: 2, 7, 2, 7, ... (kept in the root's exclusive latency)
+    let root_frames = (0..12)
+        .map(|i| {
+            produce_frames_from_metrics(
+                (0, 100 + 10 * i),
+                &[
+                    (10, 20 + 5 * i, Some("a")),
+                    (80, 82 + 5 * (i % 2), Some("[pause]")),
+                ],
+            )
+        })
+        .collect::<Vec<_>>();
+    let traces = root_frames
+        .iter()
+        .map(|frame| new_trace(frame.clone()))
+        .collect::<Vec<_>>();
+
+    let named_traces = traces
+        .iter()
+        .enumerate()
+        .map(|(i, trace)| (format!("trace_{}", i), trace))
+        .collect::<Vec<_>>();
+    let named_traces = named_traces
+        .iter()
+        .map(|(name, trace)| (name.as_str(), *trace))
+        .collect::<Vec<_>>();
+    let noise_contrib = Box::new(
+        NoiseContribution::prepare(&named_traces)
+            .unwrap()
+            .with_mode(NoiseContributionMode::Exclusive),
+    );
+
+    let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), vec![noise_contrib]);
+    let root_annotations = merged.root_frame().annotations.as_ref().unwrap();
+    let root_stats = match &root_annotations[ANNOTATION_STATS_CATEGORY] {
+        Annotation::Map(stats) => stats,
+        _ => panic!("Expected stats annotation to be a map"),
+    };
+    // LE2E - LA = child latencies => NC = 1 - SD(child) / SD(E2E) = 1 - 5 / 10
+    match &root_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME] {
+        Annotation::Double(noise_contribution) => {
+            assert_eq!(
+                (noise_contribution * 100.0).round(),
+                50.0,
+                "Expected root exclusive noise contribution to be approximately 0.5"
+            );
+        }
+        _ => panic!("Expected root noise contribution annotation to be a double"),
+    }
+
+    let child = merged.root_frame().chunks().nth(1).unwrap();
+    let child_annotations = extract_frame_chunk(&child).annotations.as_ref().unwrap();
+    let child_stats = match &child_annotations[ANNOTATION_STATS_CATEGORY] {
+        Annotation::Map(stats) => stats,
+        _ => panic!("Expected stats annotation to be a map"),
+    };
+    // "a" has no child frames, so its exclusive latency equals its total latency
+    // LE2E - LA: 90, 95, ..., 145 => NC = 1 - 5 / 10
+    match &child_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME] {
+        Annotation::Double(noise_contribution) => {
+            assert_eq!(
+                (noise_contribution * 100.0).round(),
+                50.0,
+                "Expected child exclusive noise contribution to be approximately 0.5"
+            );
+        }
+        _ => panic!("Expected child noise contribution annotation to be a double"),
     }
 }
 
