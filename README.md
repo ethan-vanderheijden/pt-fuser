@@ -49,14 +49,19 @@ For more information, consult the man page (`man perf-intel-pt`), and [this blog
 Convert the trace into `pt-fuser`'s internal format:
 
 ```bash
-perf --no-pager script -i <PERF_FILE> --itrace=bei0ns --dlfilter=./target/release/libtransform_trace.so --dlarg=<SYMBOL_REGEX> --dlarg=<OUTPUT_DIR> [--dlarg=<TRACE_LIMIT>]
+perf --no-pager script -i <PERF_FILE> --itrace=bei0ns --dlfilter=./target/release/libtransform_trace.so --dlarg=<SYMBOL_REGEX> --dlarg=<OUTPUT_DIR> --dlarg=[OPTION] ...
 ```
 
-- `SYMBOL_REGEX`: a regular expression matching the function in your application that you are interested in. It will be the top-level frame in the resulting trace.
+The required arguments are:
 
+- `SYMBOL_REGEX`: a regular expression matching the function in your application that you are interested in. It will be the top-level frame in the resulting trace.
 - `OUTPUT_DIR`: the directory where processed traces are written to. By default, it will process every occurrence of SYMBOL_REGEX as a new trace, so if X matching functions were executed, X traces are produced.
 
-- `TRACE_LIMIT`: an optional, numeric argument that limits the number of traces produced.
+The options are:
+
+- `--max-traces=N`: a numeric argument that limits the number of traces produced.
+- `--remove-plt-stubs` (default true): removes @plt stub functions from cluttering up the trace.
+- `-o`/`--compress-output` (default true): compresses the output trace files, which reduces disk space usage but takes more time to compress/uncompress.
 
 **Note**: All produced trace files are compressed with zstd.
 
