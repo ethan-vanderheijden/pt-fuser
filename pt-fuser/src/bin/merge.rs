@@ -9,7 +9,10 @@ use pt_fuser::{
     analysis::filter::{self, Filter},
     merge::{
         self,
-        stats::{BasicStats, NoiseContribution, RawLatencies, StatsGenerator, StatsProvider},
+        stats::{
+            BasicStats, NoiseContribution, NoiseContributionMode, RawLatencies, StatsGenerator,
+            StatsProvider,
+        },
     },
     trace::Trace,
 };
@@ -51,10 +54,15 @@ struct Cli {
     record_raw: bool,
     #[clap(
         long,
-        default_value_t = false,
-        help = "Record noise contribution for each merged frame as an annotation"
+        value_enum,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "inclusive",
+        help = "Record noise contribution for each merged frame as an annotation \
+                (inclusive: frame latency includes child frames; \
+                exclusive: latencies of child frames are subtracted)"
     )]
-    record_noise_contribution: bool,
+    record_noise_contribution: Option<NoiseContributionMode>,
     #[clap(long, help = Filter::HELP)]
     filter: Vec<Filter>,
     output: String,
@@ -116,9 +124,9 @@ fn main() -> ExitCode {
             stats_gens.push(Box::new(stat_gen));
         }
     }
-    if cli.record_noise_contribution {
+    if let Some(mode) = cli.record_noise_contribution {
         if let Some(stat_gen) = NoiseContribution::prepare(&traces_with_names) {
-            stats_gens.push(Box::new(stat_gen));
+            stats_gens.push(Box::new(stat_gen.with_mode(mode)));
         }
     }
 
