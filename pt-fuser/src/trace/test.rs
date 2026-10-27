@@ -53,7 +53,7 @@ pub(crate) const INNER_RANGE2: LazyLock<MetricsRange> = LazyLock::new(|| {
 pub(crate) const TEST_SYMBOL: LazyLock<Arc<SymbolInfo>> = LazyLock::new(|| {
     Arc::new(SymbolInfo {
         name: "test".to_string(),
-        offset: 0x1000,
+        vaddr_start: 0x1000,
         size: 0x100,
     })
 });

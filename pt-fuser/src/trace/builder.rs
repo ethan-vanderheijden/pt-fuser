@@ -183,11 +183,11 @@ impl TraceBuilder {
         }
     }
 
-    pub fn pause(self, metrics: Metrics) -> Result<PausedTraceBuilder, trace::Error> {
-        Ok(PausedTraceBuilder {
+    pub fn pause(self, metrics: Metrics) -> PausedTraceBuilder {
+        PausedTraceBuilder {
             inner: self,
             pause_start: metrics,
-        })
+        }
     }
 }
 
@@ -288,7 +288,7 @@ mod test {
             SAMPLE_RANGE.start,
             SymbolInfo {
                 name: "func".to_string(),
-                offset: 0,
+                vaddr_start: 0,
                 size: 0,
             },
         );
@@ -296,7 +296,7 @@ mod test {
             INNER_RANGE1.start,
             SymbolInfo {
                 name: "inner_func".to_string(),
-                offset: 0,
+                vaddr_start: 0,
                 size: 0,
             },
         );
@@ -390,7 +390,7 @@ mod test {
             0,
             Arc::new(SymbolInfo {
                 name: "my_func".to_string(),
-                offset: 0,
+                vaddr_start: 0,
                 size: 0,
             }),
         );
@@ -400,7 +400,7 @@ mod test {
             symbol_idx: 1,
             symbol: Arc::new(SymbolInfo {
                 name: "my_func@plt".to_string(),
-                offset: 0,
+                vaddr_start: 0,
                 size: 0,
             }),
         };
@@ -482,14 +482,14 @@ mod test {
     #[test]
     fn build_trace_pauses() {
         let builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.as_ref().clone());
-        let paused = builder.pause(SAMPLE_RANGE.start + METRICS_ONE).unwrap();
+        let paused = builder.pause(SAMPLE_RANGE.start + METRICS_ONE);
         let mut resumed = paused.resume(INNER_RANGE1.start);
 
         resumed.push_frame(
             INNER_RANGE1.start + METRICS_ONE,
             TEST_SYMBOL.as_ref().clone(),
         );
-        let paused = resumed.pause(INNER_RANGE1_END).unwrap();
+        let paused = resumed.pause(INNER_RANGE1_END);
 
         let resumed = paused.resume(INNER_RANGE2.start);
         let builder = extract_builder(
@@ -543,7 +543,7 @@ mod test {
             INNER_RANGE1.start,
             SymbolInfo {
                 name: "my_func@plt".to_string(),
-                offset: 0,
+                vaddr_start: 0,
                 size: 0,
             },
         );
@@ -551,7 +551,7 @@ mod test {
             INNER_RANGE1.start + METRICS_ONE,
             SymbolInfo {
                 name: "my_func".to_string(),
-                offset: 0,
+                vaddr_start: 0,
                 size: 0,
             },
         );
@@ -626,7 +626,7 @@ mod test {
             SAMPLE_RANGE.start,
             SymbolInfo {
                 name: "top level".to_string(),
-                offset: 0,
+                vaddr_start: 0,
                 size: 0,
             },
         );
@@ -634,7 +634,7 @@ mod test {
             INNER_RANGE1.start,
             SymbolInfo {
                 name: "2nd level".to_string(),
-                offset: 0,
+                vaddr_start: 0,
                 size: 0,
             },
         );
@@ -642,7 +642,7 @@ mod test {
             INNER_RANGE1.start + METRICS_ONE,
             SymbolInfo {
                 name: "3rd level".to_string(),
-                offset: 0,
+                vaddr_start: 0,
                 size: 0,
             },
         );
@@ -655,12 +655,12 @@ mod test {
     fn builder_reuse_symbols() {
         let sym1 = SymbolInfo {
             name: "func1".to_string(),
-            offset: 0,
+            vaddr_start: 0,
             size: 0,
         };
         let sym2 = SymbolInfo {
             name: "func2".to_string(),
-            offset: 0,
+            vaddr_start: 0,
             size: 0,
         };
         let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, sym1.clone());

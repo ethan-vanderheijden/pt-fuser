@@ -35,7 +35,7 @@ const DUMMY_RANGE: LazyLock<MetricsRange> = LazyLock::new(|| {
 const DUMMY_SYMBOL: LazyLock<Arc<SymbolInfo>> = LazyLock::new(|| {
     Arc::new(SymbolInfo {
         name: "dummy".to_string(),
-        offset: 1,
+        vaddr_start: 1,
         size: 1,
     })
 });
@@ -88,7 +88,7 @@ fn produce_chunks_from_symbols(symbols: &[&str]) -> Frame {
                     0,
                     Arc::new(SymbolInfo {
                         name: symbol.to_string(),
-                        offset: 1,
+                        vaddr_start: 1,
                         size: 1,
                     }),
                 ))
@@ -114,7 +114,7 @@ fn produce_frames_from_metrics(root: (u64, u64), children: &[(u64, u64, Option<&
             let symbol = symbol
                 .map(|s| SymbolInfo {
                     name: s.to_string(),
-                    offset: 1,
+                    vaddr_start: 1,
                     size: 1,
                 })
                 .map(Arc::new)
@@ -725,7 +725,7 @@ fn merge_frame_adds_noise_contribution_to_nested_frame_with_missing_traces() {
             };
             outer.symbol = Arc::new(SymbolInfo {
                 name: "outer".to_string(),
-                offset: outer.symbol.offset,
+                vaddr_start: outer.symbol.vaddr_start,
                 size: outer.symbol.size,
             });
 

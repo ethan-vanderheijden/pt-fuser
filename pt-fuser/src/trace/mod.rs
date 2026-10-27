@@ -54,13 +54,13 @@ mod ordered_annotations_serde {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SymbolInfo {
     pub name: String,
-    pub offset: u64,
+    pub vaddr_start: u64,
     pub size: u64,
 }
 
 impl SymbolInfo {
-    pub fn contains(&self, addr: u64) -> bool {
-        self.offset <= addr && addr < self.offset + self.size
+    pub fn contains(&self, vaddr: u64) -> bool {
+        self.vaddr_start <= vaddr && vaddr < self.vaddr_start + self.size
     }
 }
 
@@ -69,8 +69,8 @@ impl Display for SymbolInfo {
         write!(
             f,
             "[0x{:x} - 0x{:x}] {}",
-            self.offset,
-            self.offset + self.size,
+            self.vaddr_start,
+            self.vaddr_start + self.size,
             self.name
         )
     }

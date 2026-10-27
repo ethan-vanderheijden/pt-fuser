@@ -1,0 +1,28 @@
+[package]
+name = "convert-trace"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+blazesym = { version = "0.2.6", features = ["demangle"], default-features = false }
+clap = { version = "4.6.7", features = ["derive"] }
+cpp_demangle = "0.5.1"
+fallible-iterator = "0.3.0"
+goblin = "0.10.7"
+# TODO: once https://github.com/sum-catnip/libipt-rs/pull/13 has been merged, switch to crates.io version
+libipt = { git = "https://github.com/ethan-vanderheijden/libipt-rs", features = [
+    "libipt_master",
+] }
+# TODO: once https://github.com/mstange/linux-perf-data/pull/28 has been merged, switch to crates.io version
+linux-perf-data = { git = "https://github.com/ethan-vanderheijden/linux-perf-data" }
+memmap2 = "0.9.12"
+pt-fuser = { path = "../pt-fuser" }
+regex = "1.13.1"
+rustc-demangle = "0.1.28"
+threadpool = "1.8.1"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+
+[[bin]]
+name = "process_trace"
+path = "src/main.rs"
