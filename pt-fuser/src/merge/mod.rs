@@ -256,7 +256,7 @@ fn index_children<'a>(
                     });
 
                     children.push(IDedChild::Pause(IDedPause {
-                        original: &metrics,
+                        original: metrics,
                         offset_in_parent: metrics.start - parent.metrics.start,
                         id: *id,
                     }));
@@ -319,10 +319,10 @@ fn find_lcs<I: Id>(n: u32, sequences: &[&[I]]) -> Vec<u32> {
 
     let mut longest_subsequence = Vec::new();
     for subproblem in subproblems {
-        if let Some(subproblem) = subproblem {
-            if subproblem.len() > longest_subsequence.len() {
-                longest_subsequence = subproblem;
-            }
+        if let Some(subproblem) = subproblem
+            && subproblem.len() > longest_subsequence.len()
+        {
+            longest_subsequence = subproblem;
         }
     }
     longest_subsequence
@@ -341,7 +341,7 @@ fn find_lcs<I: Id>(n: u32, sequences: &[&[I]]) -> Vec<u32> {
 fn find_frequent_children<I: Id>(
     n: u32,
     sequences: &[&[I]],
-    process_child: &mut impl FnMut(&[&I]) -> (),
+    process_child: &mut impl FnMut(&[&I]),
     thresh: f32,
 ) {
     if thresh < 0.0 || thresh > 1.0 {
@@ -370,32 +370,30 @@ fn find_frequent_children<I: Id>(
         } else {
             0
         }
-    }) {
-        if (count as f32) / (sequences.len() as f32) >= thresh {
-            let index_avg = index_sum / (count as f32);
+    }) && (count as f32) / (sequences.len() as f32) >= thresh
+    {
+        let index_avg = index_sum / (count as f32);
 
-            let mut matching_frames: Vec<&I> = Vec::with_capacity(sequences.len());
-            let mut before: Vec<&[I]> = Vec::with_capacity(sequences.len());
-            let mut after: Vec<&[I]> = Vec::with_capacity(sequences.len());
-            'next_sequence: for i in 0..sequences.len() {
-                let sequence = sequences[i];
-                for (j, ele) in sequence.iter().enumerate() {
-                    if ele.id() == id {
-                        matching_frames.push(ele);
-                        before.push(&sequence[0..j]);
-                        after.push(&sequence[j + 1..]);
-                        continue 'next_sequence;
-                    }
+        let mut matching_frames: Vec<&I> = Vec::with_capacity(sequences.len());
+        let mut before: Vec<&[I]> = Vec::with_capacity(sequences.len());
+        let mut after: Vec<&[I]> = Vec::with_capacity(sequences.len());
+        'next_sequence: for sequence in sequences {
+            for (j, ele) in sequence.iter().enumerate() {
+                if ele.id() == id {
+                    matching_frames.push(ele);
+                    before.push(&sequence[0..j]);
+                    after.push(&sequence[j + 1..]);
+                    continue 'next_sequence;
                 }
-                let break_point = (index_avg * (sequence.len() as f32)).round() as usize;
-                before.push(&sequence[0..break_point]);
-                after.push(&sequence[break_point..]);
             }
-
-            find_frequent_children(n, &before, process_child, thresh);
-            process_child(&matching_frames);
-            find_frequent_children(n, &after, process_child, thresh);
+            let break_point = (index_avg * (sequence.len() as f32)).round() as usize;
+            before.push(&sequence[0..break_point]);
+            after.push(&sequence[break_point..]);
         }
+
+        find_frequent_children(n, &before, process_child, thresh);
+        process_child(&matching_frames);
+        find_frequent_children(n, &after, process_child, thresh);
     }
 }
 
@@ -442,7 +440,7 @@ fn constrain_metrics(
     end.insn_count = min(end.insn_count, max_metrics.insn_count);
 
     if start.ts <= end.ts && start.cycles <= end.cycles && start.insn_count <= end.insn_count {
-        return Some(MetricsRange::new(start, &end));
+        Some(MetricsRange::new(start, &end))
     } else {
         None
     }
@@ -490,7 +488,7 @@ fn merge_children(
                 IDedChild::Frame(first_frame) => {
                     // convert children from Vec<&IndexedChild> to Vec<&Frame>
                     let indexed_children = children
-                        .into_iter()
+                        .iter()
                         .map(|c| match c {
                             IDedChild::Frame(f) => (f.trace_index, f.original),
                             IDedChild::Pause(_) => {
@@ -507,13 +505,13 @@ fn merge_children(
                     merge_children(
                         &mut merged_child,
                         &indexed_children,
-                        &stats_generators,
+                        stats_generators,
                         symbol_cache,
                         lost_frame_occurrences,
                         frequent_thresh,
                     );
 
-                    fill_annotations(&mut merged_child, &indexed_children, &stats_generators);
+                    fill_annotations(&mut merged_child, &indexed_children, stats_generators);
 
                     new_parent
                         .add_child(merged_child)
@@ -589,7 +587,7 @@ fn zip_events(
         }
 
         if let Some((i, min)) = min_metrics {
-            new_occurences.push(min.clone());
+            new_occurences.push(*min);
             next_elems[i] = events[i].next();
         } else {
             break;

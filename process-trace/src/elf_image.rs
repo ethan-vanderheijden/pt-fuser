@@ -9,7 +9,7 @@ use memmap2::Mmap;
 use pt_fuser::trace::SymbolInfo;
 use tracing::warn;
 
-use crate::{elf_image::Error::ElfParseError, intel_pt::ImageProvider};
+use crate::{elf_image::Error::ElfParse, intel_pt::ImageProvider};
 
 // for now, only support x86_64 PLT stubs since only x86_64 has Intel PT
 const X86_64_PLT0_SIZE: u64 = 0x10;
@@ -19,9 +19,9 @@ const X86_64_PLT_STUB_SIZE: u64 = 0x10;
 pub enum Error {
     Io(std::io::Error),
     BadMapping(String),
-    ElfParseError(goblin::error::Error),
-    MappingReadError(String),
-    SymbolLookupError(blazesym::Error),
+    ElfParse(goblin::error::Error),
+    MappingRead(String),
+    SymbolLookup(blazesym::Error),
     SymbolNotFound(blazesym::symbolize::Reason),
 }
 
@@ -30,9 +30,9 @@ impl Display for Error {
         match self {
             Error::Io(e) => write!(f, "I/O error: {}", e),
             Error::BadMapping(msg) => write!(f, "Bad mapping: {}", msg),
-            Error::ElfParseError(e) => write!(f, "ELF parse error: {}", e),
-            Error::MappingReadError(msg) => write!(f, "Mapping read error: {}", msg),
-            Error::SymbolLookupError(e) => write!(f, "Symbol lookup error: {}", e),
+            Error::ElfParse(e) => write!(f, "ELF parse error: {}", e),
+            Error::MappingRead(msg) => write!(f, "Mapping read error: {}", msg),
+            Error::SymbolLookup(e) => write!(f, "Symbol lookup error: {}", e),
             Error::SymbolNotFound(reason) => write!(f, "Symbol not found: {:?}", reason),
         }
     }
@@ -49,9 +49,9 @@ struct PltLookup {
 
 impl PltLookup {
     fn new(elf_data: &[u8]) -> Result<Self, Error> {
-        let elf = Elf::parse(elf_data).map_err(ElfParseError)?;
+        let elf = Elf::parse(elf_data).map_err(ElfParse)?;
         if !elf.is_64 {
-            return Err(Error::MappingReadError(
+            return Err(Error::MappingRead(
                 "Currently, we only support resolving PLT stub names for x86_64 architecture"
                     .to_string(),
             ));
@@ -62,7 +62,7 @@ impl PltLookup {
             .iter()
             .find(|sh| elf.shdr_strtab.get_at(sh.sh_name) == Some(".plt"))
         else {
-            return Err(Error::MappingReadError(
+            return Err(Error::MappingRead(
                 "ELF file does not contain a .plt section".to_string(),
             ));
         };
@@ -143,7 +143,7 @@ impl Mapping {
     /// into a buffer and preparing the PltLookup.
     fn prepare_elf(&mut self) -> Result<(), Error> {
         if self.path.starts_with("[") && self.path.ends_with("]") {
-            return Err(Error::MappingReadError(format!(
+            return Err(Error::MappingRead(format!(
                 "Cannot read from special mapping {} (vaddr: 0x{:x}, size: {})",
                 self.path, self.vaddr, self.size
             )));
@@ -154,7 +154,7 @@ impl Mapping {
 
         let read_offset = self.file_offset as usize;
         if read_offset + self.size > mmap.len() {
-            return Err(Error::MappingReadError(format!(
+            return Err(Error::MappingRead(format!(
                 "For ELF {}, requested {} bytes from offset {} but file size is {} bytes",
                 self.path,
                 self.size,
@@ -191,7 +191,7 @@ impl Mapping {
     fn read(&mut self, buffer: &mut [u8], vaddr: u64) -> Result<usize, Error> {
         let buffer_offset = (vaddr - self.vaddr) as usize;
         if buffer_offset >= self.size {
-            return Err(Error::MappingReadError(format!(
+            return Err(Error::MappingRead(format!(
                 "For ELF {}, requested {} bytes from offset {} but mapped size is {} bytes",
                 self.path,
                 buffer.len(),
@@ -244,7 +244,7 @@ impl Mapping {
             let resolved = elf
                 .symbolizer
                 .symbolize_single(&source, Input::FileOffset(file_offset))
-                .map_err(Error::SymbolLookupError)?;
+                .map_err(Error::SymbolLookup)?;
 
             match resolved {
                 Symbolized::Sym(sym) => {
@@ -340,7 +340,7 @@ impl ImageProvider for ElfImage {
         }
 
         if read == 0 {
-            Err(Error::MappingReadError(format!(
+            Err(Error::MappingRead(format!(
                 "No mapping found for requested offset 0x{:x}",
                 vaddr
             )))
@@ -353,10 +353,10 @@ impl ImageProvider for ElfImage {
         if let Some(mapping) = self.lookup_mapping(vaddr) {
             mapping.resolve_symbol(vaddr)
         } else {
-            return Err(Error::MappingReadError(format!(
+            Err(Error::MappingRead(format!(
                 "No mapping found for requested offset 0x{:x}",
                 vaddr
-            )));
+            )))
         }
     }
 }

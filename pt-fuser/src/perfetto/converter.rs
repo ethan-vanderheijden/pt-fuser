@@ -39,6 +39,7 @@ const TRACE_TRACK_NAME: &str = "Trace";
 const ERROR_TRACK_ID_BASE: u64 = 30;
 const ERROR_SEQUENCE_ID_BASE: u32 = 3;
 
+#[allow(clippy::too_many_arguments)]
 fn create_track(
     timestamp: u64,
     sequence_id: u32,
@@ -49,25 +50,26 @@ fn create_track(
     child_ordering: Option<ChildTracksOrdering>,
     sibling_order_rank: Option<i32>,
 ) -> TracePacket {
-    let mut track = TracePacket::default();
-    track.optional_trusted_packet_sequence_id = Some(
-        OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(sequence_id),
-    );
-    track.sequence_flags = Some(SequenceFlags::SeqIncrementalStateCleared as u32);
-    track.previous_packet_dropped = Some(true);
-    track.first_packet_on_sequence = Some(true);
-    track.timestamp = Some(timestamp);
-
-    let mut description = TrackDescriptor::default();
-    description.parent_uuid = parent_uuid;
-    description.uuid = Some(uuid);
-    description.static_or_dynamic_name = Some(StaticOrDynamicName::StaticName(name));
-    description.description = desc;
-    description.child_ordering = child_ordering.map(|x| x as i32);
-    description.sibling_order_rank = sibling_order_rank;
-    track.data = Some(Data::TrackDescriptor(description));
-
-    track
+    let description = TrackDescriptor {
+        parent_uuid,
+        uuid: Some(uuid),
+        static_or_dynamic_name: Some(StaticOrDynamicName::StaticName(name)),
+        description: desc,
+        child_ordering: child_ordering.map(|x| x as i32),
+        sibling_order_rank,
+        ..Default::default()
+    };
+    TracePacket {
+        optional_trusted_packet_sequence_id: Some(
+            OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(sequence_id),
+        ),
+        sequence_flags: Some(SequenceFlags::SeqNeedsIncrementalState as u32),
+        previous_packet_dropped: Some(true),
+        first_packet_on_sequence: Some(true),
+        timestamp: Some(timestamp),
+        data: Some(Data::TrackDescriptor(description)),
+        ..Default::default()
+    }
 }
 
 fn create_slice_begin(
@@ -77,59 +79,59 @@ fn create_slice_begin(
     name: NameField,
     debug_annotations: Option<Vec<DebugAnnotation>>,
 ) -> TracePacket {
-    let mut slice_begin = TracePacket::default();
-    slice_begin.optional_trusted_packet_sequence_id = Some(
-        OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(sequence_id),
-    );
-    slice_begin.sequence_flags = Some(SequenceFlags::SeqNeedsIncrementalState as u32);
-    slice_begin.timestamp = Some(timestamp);
-
-    let mut slice_begin_event = TrackEvent::default();
-    slice_begin_event.r#type = Some(track_event::Type::SliceBegin as i32);
-    slice_begin_event.track_uuid = Some(track_id);
-    slice_begin_event.name_field = Some(name);
-    if let Some(debug_annotations) = debug_annotations {
-        slice_begin_event.debug_annotations = debug_annotations;
+    let slice_begin_event = TrackEvent {
+        r#type: Some(track_event::Type::SliceBegin as i32),
+        track_uuid: Some(track_id),
+        name_field: Some(name),
+        debug_annotations: debug_annotations.unwrap_or_default(),
+        ..Default::default()
+    };
+    TracePacket {
+        optional_trusted_packet_sequence_id: Some(
+            OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(sequence_id),
+        ),
+        sequence_flags: Some(SequenceFlags::SeqNeedsIncrementalState as u32),
+        timestamp: Some(timestamp),
+        data: Some(Data::TrackEvent(slice_begin_event)),
+        ..Default::default()
     }
-
-    slice_begin.data = Some(Data::TrackEvent(slice_begin_event));
-
-    slice_begin
 }
 
 fn create_slice_end(timestamp: u64, sequence_id: u32, track_id: u64) -> TracePacket {
-    let mut slice_end = TracePacket::default();
-    slice_end.optional_trusted_packet_sequence_id = Some(
-        OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(sequence_id),
-    );
-    slice_end.sequence_flags = Some(SequenceFlags::SeqNeedsIncrementalState as u32);
-    slice_end.timestamp = Some(timestamp);
-
-    let mut slice_end_event = TrackEvent::default();
-    slice_end_event.r#type = Some(track_event::Type::SliceEnd as i32);
-    slice_end_event.track_uuid = Some(track_id);
-
-    slice_end.data = Some(Data::TrackEvent(slice_end_event));
-
-    slice_end
+    let slice_end_event = TrackEvent {
+        r#type: Some(track_event::Type::SliceEnd as i32),
+        track_uuid: Some(track_id),
+        ..Default::default()
+    };
+    TracePacket {
+        optional_trusted_packet_sequence_id: Some(
+            OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(sequence_id),
+        ),
+        sequence_flags: Some(SequenceFlags::SeqNeedsIncrementalState as u32),
+        timestamp: Some(timestamp),
+        data: Some(Data::TrackEvent(slice_end_event)),
+        ..Default::default()
+    }
 }
 
 fn create_event(timestamp: u64, event_id: u32) -> TracePacket {
-    let mut event = TracePacket::default();
-    event.optional_trusted_packet_sequence_id = Some(
-        OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(ERROR_SEQUENCE_ID_BASE + event_id),
-    );
-    event.sequence_flags = Some(SequenceFlags::SeqNeedsIncrementalState as u32);
-    event.timestamp = Some(timestamp);
-
-    let mut instant_event = TrackEvent::default();
-    instant_event.r#type = Some(track_event::Type::Instant as i32);
-    instant_event.track_uuid = Some(ERROR_TRACK_ID_BASE + event_id as u64);
-    instant_event.name_field = Some(NameField::NameIid(1));
-
-    event.data = Some(Data::TrackEvent(instant_event));
-
-    event
+    let instant_event = TrackEvent {
+        r#type: Some(track_event::Type::Instant as i32),
+        track_uuid: Some(ERROR_TRACK_ID_BASE + event_id as u64),
+        name_field: Some(NameField::NameIid(1)),
+        ..Default::default()
+    };
+    TracePacket {
+        optional_trusted_packet_sequence_id: Some(
+            OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(
+                ERROR_SEQUENCE_ID_BASE + event_id,
+            ),
+        ),
+        sequence_flags: Some(SequenceFlags::SeqNeedsIncrementalState as u32),
+        timestamp: Some(timestamp),
+        data: Some(Data::TrackEvent(instant_event)),
+        ..Default::default()
+    }
 }
 
 struct InternedStrings {
@@ -257,7 +259,7 @@ impl<'a> Converter<'a> {
 
     fn convert_annotation_array(
         &mut self,
-        annotations: &Vec<Annotation>,
+        annotations: &[Annotation],
         interned_data: &mut InternedData,
     ) -> Vec<DebugAnnotation> {
         annotations
@@ -366,10 +368,7 @@ impl<'a> Converter<'a> {
         progress.set_position(frame.metrics.start.ts - progress_offset);
 
         if let Some(stack) = &mut self.current_stack {
-            stack.push(StackFrame {
-                iid,
-                annotations: annotations,
-            });
+            stack.push(StackFrame { iid, annotations });
         }
 
         for chunk in frame.chunks() {
@@ -383,7 +382,7 @@ impl<'a> Converter<'a> {
                 }
                 Chunk::Straightline(_) => continue,
                 Chunk::Pause(metrics) => {
-                    self.render_gap(completed_packets, &metrics);
+                    self.render_gap(completed_packets, metrics);
                 }
             }
         }
@@ -466,11 +465,13 @@ impl<'a> Converter<'a> {
                     Some(scaled_id),
                 );
 
-                let mut interned_data = InternedData::default();
-                interned_data.event_names = vec![EventName {
-                    iid: Some(1),
-                    name: Some(event.description.clone()),
-                }];
+                let interned_data = InternedData {
+                    event_names: vec![EventName {
+                        iid: Some(1),
+                        name: Some(event.description.clone()),
+                    }],
+                    ..Default::default()
+                };
                 event_start.interned_data = Some(interned_data);
 
                 completed_packets.send(event_start).unwrap();

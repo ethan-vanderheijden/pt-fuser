@@ -111,11 +111,9 @@ fn main() {
         traces = filter::filter_traces(traces, filter);
     }
 
-    let regex = if let Some(name) = cli.name_regex {
-        Some(Regex::new(&name).expect("Invalid regular expression"))
-    } else {
-        None
-    };
+    let regex = cli
+        .name_regex
+        .map(|name| Regex::new(&name).expect("Invalid regular expression"));
 
     let mut data = Vec::new();
     for trace in &traces {

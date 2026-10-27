@@ -95,7 +95,7 @@ fn main() -> ExitCode {
         })
         .collect::<Vec<Trace>>();
 
-    if cli.filter.len() > 0 {
+    if !cli.filter.is_empty() {
         info!("Filtering traces...");
     }
     let mut trace_names = cli.input.clone();
@@ -114,20 +114,20 @@ fn main() -> ExitCode {
 
     let trace_names = trace_names.iter().map(|s| s.as_str());
     let traces_with_names = trace_names.zip(traces.iter()).collect::<Vec<_>>();
-    if cli.record_basic_stats {
-        if let Some(stat_gen) = BasicStats::prepare(&traces_with_names) {
-            stats_gens.push(Box::new(stat_gen));
-        }
+    if cli.record_basic_stats
+        && let Some(stat_gen) = BasicStats::prepare(&traces_with_names)
+    {
+        stats_gens.push(Box::new(stat_gen));
     }
-    if cli.record_raw {
-        if let Some(stat_gen) = RawLatencies::prepare(&traces_with_names) {
-            stats_gens.push(Box::new(stat_gen));
-        }
+    if cli.record_raw
+        && let Some(stat_gen) = RawLatencies::prepare(&traces_with_names)
+    {
+        stats_gens.push(Box::new(stat_gen));
     }
-    if let Some(mode) = cli.record_noise_contribution {
-        if let Some(stat_gen) = NoiseContribution::prepare(&traces_with_names) {
-            stats_gens.push(Box::new(stat_gen.with_mode(mode)));
-        }
+    if let Some(mode) = cli.record_noise_contribution
+        && let Some(stat_gen) = NoiseContribution::prepare(&traces_with_names)
+    {
+        stats_gens.push(Box::new(stat_gen.with_mode(mode)));
     }
 
     let merged_trace = merge::merge_traces(&traces_ref, stats_gens);

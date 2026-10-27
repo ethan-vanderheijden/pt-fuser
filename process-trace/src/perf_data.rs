@@ -68,11 +68,11 @@ impl IncompleteAuxtrace {
     }
 
     fn add_part(&mut self, index: u32, offset: u64, part_data: &[u8]) -> Result<(), Error> {
-        if let Some(cur_index) = self.cur_index {
-            if cur_index != index {
-                // thread switch to new CPU, buffer offset restarts
-                self.cur_offset = 0;
-            }
+        if let Some(cur_index) = self.cur_index
+            && cur_index != index
+        {
+            // thread switch to new CPU, buffer offset restarts
+            self.cur_offset = 0;
         }
         self.cur_index = Some(index);
 
@@ -84,9 +84,7 @@ impl IncompleteAuxtrace {
             self.cur_offset += part_data.len() as u64;
             Ok(())
         } else {
-            return Err(Error::BadAuxtrace(format!(
-                "Auxtrace records must be read in order. We don't currently support out-of-order auxtrace records."
-            )));
+            Err(Error::BadAuxtrace("Auxtrace records must be read in order. We don't currently support out-of-order auxtrace records.".to_string()))
         }
     }
 
@@ -175,7 +173,7 @@ pub fn parse_perf_data(file_path: &str) -> Result<(TraceMetadata, Vec<RawTrace>)
 
     let cpu_string = perf_file.cpu_id().map_err(Error::PerfData)?;
     let cpu = if let Some(cpu_string) = cpu_string {
-        extract_cpu_info(&cpu_string)?
+        extract_cpu_info(cpu_string)?
     } else {
         return Err(Error::BadCpuID(
             "CPU ID information not found in perf.data".to_string(),
@@ -204,25 +202,20 @@ pub fn parse_perf_data(file_path: &str) -> Result<(TraceMetadata, Vec<RawTrace>)
                             &auxtrace.aux_data.as_slice(),
                         )?;
                     }
-                    UserRecord::AuxtraceInfo(info) => {
-                        if info.type_ == AUXTRACE_TYPE_INTEL_PT {
-                            for attr_desc in perf_file.event_attributes() {
-                                match attr_desc.attr.type_ {
-                                    PerfEventType::DynamicPmu(pmu_type, config, _, _) => {
-                                        if info.pmu_type == pmu_type {
-                                            frequency_info =
-                                                Some(extract_freq_info(&info, config)?);
-                                            break;
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                    UserRecord::AuxtraceInfo(info) if info.type_ == AUXTRACE_TYPE_INTEL_PT => {
+                        for attr_desc in perf_file.event_attributes() {
+                            if let PerfEventType::DynamicPmu(pmu_type, config, _, _) =
+                                attr_desc.attr.type_
+                                && info.pmu_type == pmu_type
+                            {
+                                frequency_info = Some(extract_freq_info(&info, config)?);
+                                break;
                             }
-                            tsc_info = Some(TscConversion {
-                                time_shift: info.time_shift,
-                                time_mult: info.time_mult,
-                            });
                         }
+                        tsc_info = Some(TscConversion {
+                            time_shift: info.time_shift,
+                            time_mult: info.time_mult,
+                        });
                     }
                     _ => {}
                 }
@@ -260,10 +253,8 @@ pub fn parse_perf_data(file_path: &str) -> Result<(TraceMetadata, Vec<RawTrace>)
                         )
                         .map_err(Error::ElfImage)?;
                 }
-                EventRecord::Comm(comm) => {
-                    if comm.pid > 0 && comm.tid > 0 && comm.pid != comm.tid {
-                        tid_to_parent.insert(comm.tid as u32, comm.pid as u32);
-                    }
+                EventRecord::Comm(comm) if comm.pid > 0 && comm.tid > 0 && comm.pid != comm.tid => {
+                    tid_to_parent.insert(comm.tid as u32, comm.pid as u32);
                 }
                 _ => {}
             },
@@ -297,7 +288,7 @@ pub fn parse_perf_data(file_path: &str) -> Result<(TraceMetadata, Vec<RawTrace>)
             final_traces.push(RawTrace {
                 tid,
                 data: finalized,
-                image: image,
+                image,
             });
         }
     }

@@ -6,7 +6,8 @@ pub struct DataCollectionError;
 impl DataCollectionError {
     pub const ID: u32 = 1;
     pub const NAME: &'static str = "Trace Overflow";
-    pub const DESC: &'static str = "Intel PT's buffer overflowed while tracing. Callstacks may be corrupted.";
+    pub const DESC: &'static str =
+        "Intel PT's buffer overflowed while tracing. Callstacks may be corrupted.";
 }
 
 pub struct TraceInterrupted;

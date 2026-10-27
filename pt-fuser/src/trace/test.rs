@@ -7,7 +7,7 @@ pub(crate) const SAMPLE_RANGE_END: Metrics = Metrics {
     cycles: 350,
     insn_count: 1000,
 };
-pub(crate) const SAMPLE_RANGE: LazyLock<MetricsRange> = LazyLock::new(|| {
+pub(crate) static SAMPLE_RANGE: LazyLock<MetricsRange> = LazyLock::new(|| {
     MetricsRange::new(
         Metrics {
             ts: 100,
@@ -23,7 +23,7 @@ pub(crate) const INNER_RANGE1_END: Metrics = Metrics {
     cycles: 150,
     insn_count: 500,
 };
-pub(crate) const INNER_RANGE1: LazyLock<MetricsRange> = LazyLock::new(|| {
+pub(crate) static INNER_RANGE1: LazyLock<MetricsRange> = LazyLock::new(|| {
     MetricsRange::new(
         Metrics {
             ts: 120,
@@ -39,7 +39,7 @@ pub(crate) const INNER_RANGE2_END: Metrics = Metrics {
     cycles: 300,
     insn_count: 900,
 };
-pub(crate) const INNER_RANGE2: LazyLock<MetricsRange> = LazyLock::new(|| {
+pub(crate) static INNER_RANGE2: LazyLock<MetricsRange> = LazyLock::new(|| {
     MetricsRange::new(
         Metrics {
             ts: 160,
@@ -50,7 +50,7 @@ pub(crate) const INNER_RANGE2: LazyLock<MetricsRange> = LazyLock::new(|| {
     )
 });
 
-pub(crate) const TEST_SYMBOL: LazyLock<Arc<SymbolInfo>> = LazyLock::new(|| {
+pub(crate) static TEST_SYMBOL: LazyLock<Arc<SymbolInfo>> = LazyLock::new(|| {
     Arc::new(SymbolInfo {
         name: "test".to_string(),
         vaddr_start: 0x1000,

@@ -21,7 +21,7 @@ const DUMMY_RANGE_END: Metrics = Metrics {
     cycles: 200,
     insn_count: 200,
 };
-const DUMMY_RANGE: LazyLock<MetricsRange> = LazyLock::new(|| {
+static DUMMY_RANGE: LazyLock<MetricsRange> = LazyLock::new(|| {
     MetricsRange::new(
         Metrics {
             ts: 100,
@@ -32,7 +32,7 @@ const DUMMY_RANGE: LazyLock<MetricsRange> = LazyLock::new(|| {
     )
 });
 
-const DUMMY_SYMBOL: LazyLock<Arc<SymbolInfo>> = LazyLock::new(|| {
+static DUMMY_SYMBOL: LazyLock<Arc<SymbolInfo>> = LazyLock::new(|| {
     Arc::new(SymbolInfo {
         name: "dummy".to_string(),
         vaddr_start: 1,
@@ -40,7 +40,7 @@ const DUMMY_SYMBOL: LazyLock<Arc<SymbolInfo>> = LazyLock::new(|| {
     })
 });
 
-const SYMBOLS: LazyLock<Vec<Arc<SymbolInfo>>> = LazyLock::new(|| vec![DUMMY_SYMBOL.clone()]);
+static SYMBOLS: LazyLock<Vec<Arc<SymbolInfo>>> = LazyLock::new(|| vec![DUMMY_SYMBOL.clone()]);
 
 fn new_frame(range: MetricsRange) -> Frame {
     Frame::new(range, 0, DUMMY_SYMBOL.clone())
@@ -50,7 +50,7 @@ fn new_trace(root: Frame) -> Trace {
     Trace::new(SYMBOLS.clone(), root, vec![])
 }
 
-const DUMMY_FRAME: LazyLock<Frame> = LazyLock::new(|| new_frame(DUMMY_RANGE.clone()));
+static DUMMY_FRAME: LazyLock<Frame> = LazyLock::new(|| new_frame(DUMMY_RANGE.clone()));
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct TestLCS {
@@ -92,7 +92,7 @@ fn produce_chunks_from_symbols(symbols: &[&str]) -> Frame {
                         size: 1,
                     }),
                 ))
-                .expect(&format!("Failed to add child '{}' to frame", symbol));
+                .unwrap_or_else(|_| panic!("Failed to add child '{}' to frame", symbol));
         }
     }
     frame
@@ -121,10 +121,12 @@ fn produce_frames_from_metrics(root: (u64, u64), children: &[(u64, u64, Option<&
                 .unwrap_or(DUMMY_SYMBOL.clone());
             frame
                 .add_child(Frame::new(range, 0, symbol))
-                .expect(&format!(
-                    "Failed to add child with range ({}, {}) to frame",
-                    start, end
-                ));
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "Failed to add child with range ({}, {}) to frame",
+                        start, end
+                    )
+                });
         }
     }
     frame
@@ -552,10 +554,7 @@ fn merge_frame_with_anotations() {
         produce_frames_from_metrics((0, 80), &[]),
         produce_frames_from_metrics((0, 78), &[]),
     ];
-    let traces = root_frames
-        .into_iter()
-        .map(|frame| new_trace(frame))
-        .collect::<Vec<_>>();
+    let traces = root_frames.into_iter().map(new_trace).collect::<Vec<_>>();
 
     let named_traces = traces
         .iter()
@@ -939,7 +938,7 @@ fn merge_traces_export_raw() {
     }
 
     let grandchild = &child.chunks().nth(1).unwrap();
-    let grandchild = extract_frame_chunk(&grandchild);
+    let grandchild = extract_frame_chunk(grandchild);
     let grandchild_raw_data = grandchild
         .annotations
         .as_ref()

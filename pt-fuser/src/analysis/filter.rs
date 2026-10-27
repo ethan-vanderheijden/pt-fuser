@@ -7,7 +7,7 @@ use crate::{
     trace::{Event, Frame, Trace, metrics::MetricsRange, trace_error},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Filter {
     pub target: Option<Regex>,
     pub min_errors: Option<u32>,
@@ -23,20 +23,6 @@ impl Filter {
                                     [min_latency=µs,] [max_latency=µs,] [min_interrupts=num,] [max_interrupts=num]\". \
                                     Traces with frames violating a filter are ignored. If target regex is not \
                                     provided, filter applies to root frames.";
-}
-
-impl Default for Filter {
-    fn default() -> Self {
-        Filter {
-            target: None,
-            min_errors: None,
-            max_errors: None,
-            min_latency: None,
-            max_latency: None,
-            min_interrupts: None,
-            max_interrupts: None,
-        }
-    }
 }
 
 impl FromStr for Filter {
@@ -138,15 +124,15 @@ fn run_filter<'a>(
     let mut interrupt_index = 0;
 
     for frame in frames {
-        if let Some(duration_min) = filter.min_latency {
-            if frame.metrics.total_time() < duration_min {
-                return false;
-            }
+        if let Some(duration_min) = filter.min_latency
+            && frame.metrics.total_time() < duration_min
+        {
+            return false;
         }
-        if let Some(duration_max) = filter.max_latency {
-            if frame.metrics.total_time() > duration_max {
-                return false;
-            }
+        if let Some(duration_max) = filter.max_latency
+            && frame.metrics.total_time() > duration_max
+        {
+            return false;
         }
 
         if let Some(decoding_errors) = decoding_errors {
@@ -187,7 +173,7 @@ pub fn filter_traces(mut traces: Vec<Trace>, filter: &Filter) -> Vec<Trace> {
     traces
 }
 
-pub fn filter_bitmap(traces: &Vec<Trace>, filter: &Filter) -> Vec<bool> {
+pub fn filter_bitmap(traces: &[Trace], filter: &Filter) -> Vec<bool> {
     traces
         .iter()
         .map(|trace| {

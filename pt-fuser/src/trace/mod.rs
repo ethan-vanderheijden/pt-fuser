@@ -121,11 +121,11 @@ impl<'a> Iterator for ChunkIterator<'a> {
             {
                 let straightline = MetricsRange::new(self.curr_metrics, &chunk.metrics().start);
                 self.curr_metrics = chunk.metrics().start;
-                return Some(Chunk::Straightline(straightline));
+                Some(Chunk::Straightline(straightline))
             } else {
                 self.curr_metrics = chunk.metrics().end();
                 self.index += 1;
-                return Some(chunk.to_chunk());
+                Some(chunk.to_chunk())
             }
         } else {
             if self.ending_metric.ts > self.curr_metrics.ts
@@ -134,9 +134,9 @@ impl<'a> Iterator for ChunkIterator<'a> {
             {
                 let straightline = MetricsRange::new(self.curr_metrics, &self.ending_metric);
                 self.curr_metrics = self.ending_metric;
-                return Some(Chunk::Straightline(straightline));
+                Some(Chunk::Straightline(straightline))
             } else {
-                return None;
+                None
             }
         }
     }
@@ -207,7 +207,7 @@ impl Frame {
             return Ok(());
         }
 
-        return Err(Error::InvalidRange(chunk.metrics().clone()));
+        Err(Error::InvalidRange(chunk.metrics().clone()))
     }
 
     pub fn add_child(&mut self, child: Frame) -> Result<(), Error> {
@@ -257,7 +257,7 @@ impl StoredChunk {
     fn metrics(&self) -> &MetricsRange {
         match self {
             StoredChunk::Frame(frame) => &frame.metrics,
-            StoredChunk::Pause(pause) => &pause,
+            StoredChunk::Pause(pause) => pause,
         }
     }
 

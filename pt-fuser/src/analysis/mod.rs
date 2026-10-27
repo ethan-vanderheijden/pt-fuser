@@ -56,12 +56,8 @@ where
 
             let next_chunk = self.remaining_chunks.next();
             if let Some(next_chunk) = next_chunk {
-                match next_chunk {
-                    Chunk::Frame(frame) => {
-                        self.child_frame_finder =
-                            Some(Box::new(FrameFinder::new(frame, self.pred)));
-                    }
-                    _ => {}
+                if let Chunk::Frame(frame) = next_chunk {
+                    self.child_frame_finder = Some(Box::new(FrameFinder::new(frame, self.pred)));
                 }
             } else {
                 break;

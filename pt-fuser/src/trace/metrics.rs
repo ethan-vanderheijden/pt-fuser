@@ -37,7 +37,7 @@ impl Add for Metrics {
     type Output = Metrics;
 
     fn add(self, rhs: Self) -> Self::Output {
-        &self + &rhs
+        (&self).add(&rhs)
     }
 }
 
@@ -65,7 +65,7 @@ impl Sub for Metrics {
     type Output = Metrics;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        &self - &rhs
+        (&self).sub(&rhs)
     }
 }
 
@@ -93,7 +93,7 @@ impl Div<u64> for Metrics {
     type Output = Metrics;
 
     fn div(self, rhs: u64) -> Self::Output {
-        &self / rhs
+        (&self).div(rhs)
     }
 }
 
@@ -121,7 +121,7 @@ impl Div for Metrics {
     type Output = Metrics;
 
     fn div(self, rhs: Self) -> Self::Output {
-        &self / &rhs
+        (&self).div(&rhs)
     }
 }
 
@@ -149,7 +149,7 @@ impl Mul<u64> for Metrics {
     type Output = Metrics;
 
     fn mul(self, rhs: u64) -> Self::Output {
-        &self * rhs
+        (&self).mul(rhs)
     }
 }
 
@@ -177,7 +177,7 @@ impl Mul for Metrics {
     type Output = Metrics;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        &self * &rhs
+        (&self).mul(&rhs)
     }
 }
 
@@ -404,36 +404,24 @@ impl MetricsRange {
     #[inline]
     pub fn total_time(&self) -> u64 {
         match self.end.as_enum() {
-            InlineOrPtrView::Inline(packed_diff) => {
-                return (packed_diff >> 42) & 0x1FFFFF;
-            }
-            InlineOrPtrView::Ptr(end_metrics) => {
-                return end_metrics.ts - self.start.ts;
-            }
+            InlineOrPtrView::Inline(packed_diff) => (packed_diff >> 42) & 0x1FFFFF,
+            InlineOrPtrView::Ptr(end_metrics) => end_metrics.ts - self.start.ts,
         }
     }
 
     #[inline]
     pub fn total_cycles(&self) -> u64 {
         match self.end.as_enum() {
-            InlineOrPtrView::Inline(packed_diff) => {
-                return (packed_diff >> 21) & 0x1FFFFF;
-            }
-            InlineOrPtrView::Ptr(end_metrics) => {
-                return end_metrics.cycles - self.start.cycles;
-            }
+            InlineOrPtrView::Inline(packed_diff) => (packed_diff >> 21) & 0x1FFFFF,
+            InlineOrPtrView::Ptr(end_metrics) => end_metrics.cycles - self.start.cycles,
         }
     }
 
     #[inline]
     pub fn total_insn(&self) -> u64 {
         match self.end.as_enum() {
-            InlineOrPtrView::Inline(packed_diff) => {
-                return packed_diff & 0x1FFFFF;
-            }
-            InlineOrPtrView::Ptr(end_metrics) => {
-                return end_metrics.insn_count - self.start.insn_count;
-            }
+            InlineOrPtrView::Inline(packed_diff) => packed_diff & 0x1FFFFF,
+            InlineOrPtrView::Ptr(end_metrics) => end_metrics.insn_count - self.start.insn_count,
         }
     }
 
