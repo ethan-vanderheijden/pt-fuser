@@ -49,33 +49,30 @@ For more information, consult the man page (`man perf-intel-pt`), and [this blog
 Convert the trace into `pt-fuser`'s internal format:
 
 ```bash
-perf --no-pager script -i <PERF_FILE> --itrace=bei0ns --dlfilter=./target/release/libtransform_trace.so --dlarg=<SYMBOL_REGEX> --dlarg=<OUTPUT_DIR> --dlarg=[OPTION] ...
+cargo run --bin process_trace -- <PERF_FILE> <SYMBOL_REGEX> <OUTPUT_DIR>
 ```
 
 The required arguments are:
 
+- `PERF_FILE`: the path to the `perf.data` file produced by `perf record`
 - `SYMBOL_REGEX`: a regular expression matching the function in your application that you are interested in. It will be the top-level frame in the resulting trace.
-- `OUTPUT_DIR`: the directory where processed traces are written to. By default, it will process every occurrence of SYMBOL_REGEX as a new trace, so if X matching functions were executed, X traces are produced.
+- `OUTPUT_DIR`: the directory where processed traces are written to. Every occurrence of SYMBOL_REGEX becomes a new trace, so if X matching functions were executed, X traces are produced. Traces are named `OUTPUT_DIR/trace-<TID>-<INDEX>.bin.zst`.
 
 The options are:
 
-- `--max-traces=N`: a numeric argument that limits the number of traces produced.
-- `--remove-plt-stubs` (default true): removes @plt stub functions from cluttering up the trace.
-- `-o`/`--compress-output` (default true): compresses the output trace files, which reduces disk space usage but takes more time to compress/uncompress.
-
-**Note**: All produced trace files are compressed with zstd.
+- `--max-traces=N`: stops producing traces after N traces have been produced.
+- `--remove-plt-stubs` (default true): binaries that call into shared objects first call into a PLT stub, which then jumps to the actual function. This option removes the PLT stub from the trace, decluttering it.
 
 ### 3. Filtering out outliers in latency/error count
 
 First, create a histogram of latencies or error counts across all your traces:
 
 ```bash
-cargo run --bin histogram -- --compressed <lantency|errors|interrupts> </path/to/traces/*>
+cargo run --bin histogram -- <lantency|errors|interrupts> </path/to/traces/*>
 ```
 
 - `latency` will create a histogram of latencies (in nanoseconds). `errors` will create a histogram of Intel PT decoding errors, typically lost data due to buffer overflow. `interrupts` will create a histogram of the number of times the trace was paused while the CPU serviced an interrupt.
 - `</path/to/traces/*>` is a list of trace files to be analyzed for the histogram
-- `--compressed` will uncompress the input file before trying to read it
 
 Then, you can develop a set of filters that excludes any perceived outliers. Each filter has the form:
 
@@ -90,7 +87,7 @@ Then, you can develop a set of filters that excludes any perceived outliers. Eac
 You can preview the effect of a filter by re-running the histogram command with the `--filter` option:
 
 ```bash
-cargo run --bin histogram -- --compressed <lantency|errors> </path/to/traces/*> --filter <FILTER1> --filter <FILTER2> ...
+cargo run --bin histogram -- <lantency|errors> </path/to/traces/*> --filter <FILTER1> --filter <FILTER2> ...
 ```
 
 ### 4. Merge multiple traces into one averaged trace
@@ -98,13 +95,17 @@ cargo run --bin histogram -- --compressed <lantency|errors> </path/to/traces/*> 
 Merge multiple `pt-fuser` traces into a single trace, which does its best to extract a common sequence of function calls and averages the latencies of them:
 
 ```bash
-cargo run --bin merge -- --compressed --filter <FILTER1> --filter <FILTER2> <OUTPUT_FILE> </path/to/traces/*>
+cargo run --bin merge -- --filter <FILTER1> --filter <FILTER2> <OUTPUT_FILE> </path/to/traces/*>
 ```
 
-- `OUTPUT_FILE` is the file where the merged trace will be written to. (will be zstd compressed)
+- `OUTPUT_FILE` is the file where the merged trace will be written to.
 - `</path/to/traces/*>` is a list of trace files to merge
 - `--filter` is optional and can be repeated multiple times to exclude some of the input traces
-- `--compressed` will uncompress the input file before trying to read it
+
+Each frame in the merged trace is produced from a set frames in the original traces. We can compute statistics over the set of original frames. The statistics can be seen in Perfetto under "debug" in the Arguments pane.
+- `--record-basic-stats` (default true): records quartiles, mean, and standard deviation
+- `--record-raw` (default false): records the latencies of every original frame, in case you want to do your own analysis later.
+- `--record-noise-contribution=<inclusive|exclusive>` (disabled by default): TODO - document Noise Contribution
 
 ### 5. Compare traces against each other and find candidate regressions
 
@@ -115,10 +116,11 @@ cargo run --bin merge -- --compressed --filter <FILTER1> --filter <FILTER2> <OUT
 Convert a particular `pt-fuser` trace to a trace that can be viewed in https://ui.perfetto.dev/:
 
 ```bash
-cargo run --bin convert_perfetto -- --compressed <INPUT_FILE> <OUTPUT_FILE>
+cargo run --bin convert_perfetto -- <INPUT_FILE> <OUTPUT_FILE>
 ```
 
-- `--compressed` will uncompress the input file before trying to read it
+The options are:
+- `--render-pauses=<gap|block>` (default gap): places where the tracing was paused are usually rendered as gaps in Perfetto. If there's a lot of gaps, this can become annoying, so you can reder pauses as a special frame called '--pause--'.
 
 ## Versioning
 

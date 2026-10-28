@@ -44,9 +44,7 @@ struct Cli {
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "inclusive",
-        help = "Record noise contribution for each merged frame as an annotation \
-                (inclusive: frame latency includes child frames; \
-                exclusive: latencies of child frames are subtracted)"
+        help = "Record noise contribution for each merged frame as an annotation"
     )]
     record_noise_contribution: Option<NoiseContributionMode>,
     #[clap(long, help = Filter::HELP)]
