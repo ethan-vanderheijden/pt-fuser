@@ -9,6 +9,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 cpp_demangle = "0.5.1"
 fallible-iterator = "0.3.0"
 goblin = "0.10.7"
+indicatif = "0.18.6"
 # TODO: once https://github.com/sum-catnip/libipt-rs/pull/13 has been merged, switch to crates.io version
 libipt = { git = "https://github.com/ethan-vanderheijden/libipt-rs", features = [
     "libipt_master",

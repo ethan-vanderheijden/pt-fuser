@@ -17,6 +17,8 @@ use regex::Regex;
 use threadpool::ThreadPool;
 use tracing::{Level, info};
 
+use crate::intel_pt::ProgressTracker;
+
 #[derive(Parser)]
 #[command(about = "Converts a trace from pt-fuser representation to a Perfetto trace")]
 #[command(
@@ -39,15 +41,26 @@ pub struct Args {
         help = "Remove @plt stub functions from cluttering up the trace"
     )]
     remove_plt_stubs: bool,
+    #[clap(
+        long,
+        short = 'v',
+        default_value_t = false,
+        help = "Enable verbose logging (disables progress bar)"
+    )]
+    verbose: bool,
 }
 
 fn main() {
+    let args = Args::parse();
+
     let subscriber = tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
+        .with_max_level(if args.verbose {
+            Level::DEBUG
+        } else {
+            Level::ERROR
+        })
         .finish();
     tracing::subscriber::set_global_default(subscriber).unwrap();
-
-    let args = Args::parse();
 
     let trace_options = FrameCompletionOptions {
         remove_plt_stubs: args.remove_plt_stubs,
@@ -75,6 +88,13 @@ fn main() {
     let (metadata, raw_data_vec) =
         perf_data::parse_perf_data(&args.perf_file).expect("Failed to parse perf.data");
     for mut raw_data in raw_data_vec {
+        let progress_tracker = if args.verbose {
+            None
+        } else {
+            Some(ProgressTracker::new(|num_traces| {
+                format!("Thread {} - produced {} traces", raw_data.tid, num_traces)
+            }))
+        };
         let mut decoder_image =
             Image::new(None).expect("Failed to allocate an image for the decoder");
         let mut trace_iter = intel_pt::convert(
@@ -85,6 +105,7 @@ fn main() {
             &sym_regex,
             trace_options,
             trace_limit,
+            progress_tracker,
         )
         .expect("Failed to create Intel PT trace decoder")
         .enumerate();

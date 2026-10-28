@@ -877,6 +877,7 @@ dependencies = [
  "cpp_demangle",
  "fallible-iterator",
  "goblin",
+ "indicatif",
  "libipt",
  "linux-perf-data",
  "memmap2",

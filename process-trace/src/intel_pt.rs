@@ -1,6 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use fallible_iterator::FallibleIterator;
+use indicatif::{ProgressBar, ProgressStyle};
 pub use libipt::enc_dec_builder::{Cpu, CpuVendor, Frequency};
 use libipt::{
     block::{Block, BlockDecoder},
@@ -20,6 +21,9 @@ use pt_fuser::trace::{
 };
 use regex::Regex;
 use tracing::{error, info, warn};
+
+pub const PROGRESS_STYLE_TEMPLATE: &str =
+    "[{wide_bar}] {percent}%\n   ↳ Estimated time remaining: {eta}\n     {msg}";
 
 pub trait ImageProvider {
     type ReadError: std::error::Error;
@@ -65,7 +69,7 @@ enum DecoderState {
     SyncForward,
 }
 
-struct Transformer<'a, 'b: 'a, 'c, I: ImageProvider> {
+struct Transformer<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> {
     decoder: BlockDecoder<'a, 'c>,
     // decoder holds a raw pointer to the buffer, which must outlive it
     _buffer: &'b [u8],
@@ -79,9 +83,11 @@ struct Transformer<'a, 'b: 'a, 'c, I: ImageProvider> {
     // tracks the reason why control flows from one block to the next
     branch_reason: Class,
     decoder_state: DecoderState,
+    progress_tracker: Option<ProgressTracker<F>>,
 }
 
-impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
+impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, 'b, 'c, I, F> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         decoder: BlockDecoder<'a, 'c>,
         buffer: &'b [u8],
@@ -90,6 +96,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
         target_symbol: Regex,
         frame_completion_options: FrameCompletionOptions,
         traces_left: Option<usize>,
+        progress_tracker: Option<ProgressTracker<F>>,
     ) -> Result<Self, PtError> {
         Ok(Self {
             decoder,
@@ -103,6 +110,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
             builder: None,
             branch_reason: Class::Unknown,
             decoder_state: DecoderState::SyncForward,
+            progress_tracker,
         })
     }
 
@@ -178,6 +186,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
 
         match event.event_type() {
             libiptEventType::AsnycDisabled(_) | libiptEventType::Disabled(_) => {
+                info!("Disabling tracing at time {}", cur_metrics);
                 if let Some(builder_state) = self.builder.take() {
                     match builder_state {
                         BuilderState::InProgress(builder) => {
@@ -194,6 +203,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
                 }
             }
             libiptEventType::Enabled(_) => {
+                info!("Enabling tracing at time {}", cur_metrics);
                 if let Some(builder_state) = self.builder.take() {
                     match builder_state {
                         BuilderState::InProgress(builder) => {
@@ -252,6 +262,9 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
 
         let branch_reason = self.branch_reason;
         self.branch_reason = block.class();
+
+        info!("{:?} into {}", branch_reason, block_sym);
+        info!("at time {}", self.cur_metrics);
 
         // How we handle [unknown] frames
         // ------------------------------
@@ -374,6 +387,12 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
 
     fn produce_trace(&mut self) -> Result<Option<Trace>, PtError> {
         loop {
+            if let Some(progress_tracker) = &mut self.progress_tracker
+                && let Ok(cur_offset) = self.decoder.offset()
+            {
+                progress_tracker.bar.set_position(cur_offset);
+            }
+
             match self.decoder_state {
                 DecoderState::Finished => {
                     return Ok(None);
@@ -482,7 +501,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
     }
 }
 
-impl<I: ImageProvider> FallibleIterator for Transformer<'_, '_, '_, I> {
+impl<I: ImageProvider, F: Fn(usize) -> String> FallibleIterator for Transformer<'_, '_, '_, I, F> {
     type Item = Trace;
     type Error = PtError;
 
@@ -494,8 +513,25 @@ impl<I: ImageProvider> FallibleIterator for Transformer<'_, '_, '_, I> {
                 *traces_left -= 1;
             }
         }
-        let result = self.produce_trace()?;
-        Ok(result)
+        let result = self.produce_trace();
+        if let Some(mut progress_tracker) = self.progress_tracker.take() {
+            match &result {
+                Ok(Some(_)) => {
+                    progress_tracker.incr_produced();
+                    self.progress_tracker = Some(progress_tracker);
+                }
+                _ => {
+                    progress_tracker.bar.finish();
+                    self.progress_tracker = None;
+                    eprintln!(
+                        "\n\nProduced {} traces in {:2?}",
+                        progress_tracker.num_produced,
+                        progress_tracker.bar.elapsed()
+                    );
+                }
+            };
+        }
+        result
     }
 }
 
@@ -512,6 +548,33 @@ impl TscConversion {
     }
 }
 
+pub struct ProgressTracker<F: Fn(usize) -> String> {
+    bar: ProgressBar,
+    produced_fn: F,
+    num_produced: usize,
+}
+
+impl<F: Fn(usize) -> String> ProgressTracker<F> {
+    pub fn new(produce_msg: F) -> Self {
+        let bar = ProgressBar::new(0);
+        bar.set_style(
+            ProgressStyle::with_template(PROGRESS_STYLE_TEMPLATE)
+                .expect("Failed to produce ProgressStyle"),
+        );
+        bar.set_message(produce_msg(0));
+        Self {
+            bar,
+            produced_fn: produce_msg,
+            num_produced: 0,
+        }
+    }
+
+    fn incr_produced(&mut self) {
+        self.num_produced += 1;
+        self.bar.set_message((self.produced_fn)(self.num_produced));
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TraceMetadata {
     pub cpu_info: Cpu,
@@ -519,7 +582,8 @@ pub struct TraceMetadata {
     pub tsc_info: TscConversion,
 }
 
-pub fn convert<'a, 'b: 'a, 'c, I: ImageProvider + 'a + 'c>(
+#[allow(clippy::too_many_arguments)]
+pub fn convert<'a, 'b: 'a, 'c, I: ImageProvider + 'a + 'c, F: 'a + Fn(usize) -> String>(
     data: &'a mut [u8],
     decoder_image: &'b mut Image<'c>,
     image_provider: I,
@@ -527,6 +591,7 @@ pub fn convert<'a, 'b: 'a, 'c, I: ImageProvider + 'a + 'c>(
     target_symbol: &Regex,
     frame_completion_options: FrameCompletionOptions,
     max_traces: Option<usize>,
+    mut progress_tracker: Option<ProgressTracker<F>>,
 ) -> Result<impl FallibleIterator<Item = Trace, Error = PtError> + 'a, PtError> {
     let builder = EncoderDecoderBuilder::<BlockDecoder>::new()
         .cpu(metadata.cpu_info)
@@ -559,6 +624,10 @@ pub fn convert<'a, 'b: 'a, 'c, I: ImageProvider + 'a + 'c>(
     ));
     decoder.set_image(Some(decoder_image))?;
 
+    if let Some(progress_tracker) = &mut progress_tracker {
+        progress_tracker.bar.set_length(data.len() as u64);
+    }
+
     Transformer::new(
         decoder,
         data,
@@ -567,5 +636,6 @@ pub fn convert<'a, 'b: 'a, 'c, I: ImageProvider + 'a + 'c>(
         target_symbol.to_owned(),
         frame_completion_options,
         max_traces,
+        progress_tracker,
     )
 }

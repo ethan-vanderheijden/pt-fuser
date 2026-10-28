@@ -487,6 +487,6 @@ impl<'a> Converter<'a> {
             }
         }
         progress.finish();
-        println!("Finished! Total time: {:.2?}", progress.elapsed());
+        eprintln!("Finished! Total time: {:.2?}", progress.elapsed());
     }
 }
