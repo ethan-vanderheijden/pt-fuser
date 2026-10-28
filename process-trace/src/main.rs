@@ -1,3 +1,4 @@
+mod demangle;
 mod elf_image;
 mod intel_pt;
 mod perf_data;

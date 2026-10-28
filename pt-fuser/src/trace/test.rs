@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use indexmap::IndexMap;
 
-use crate::trace::frame::Annotation;
+use crate::trace::frame::{Annotation, Chunk};
 
 use super::*;
 
@@ -71,27 +71,64 @@ pub(crate) const METRICS_ONE: Metrics = Metrics {
 /// Creates a trace with no events and a root frame that has five chunks:
 /// child frame, straightline, child frame, straightline, child frame
 pub(crate) fn test_trace() -> Trace {
-    let mut outer = Frame::new(SAMPLE_RANGE.clone(), 0, TEST_SYMBOL.clone());
-    let middle = Frame::new(INNER_RANGE1.clone(), 0, TEST_SYMBOL.clone());
+    let symbols = vec![
+        Arc::new(SymbolInfo {
+            name: "outer".to_string(),
+            vaddr_start: 0x1000,
+            size: 0x100,
+        }),
+        Arc::new(SymbolInfo {
+            name: "middle".to_string(),
+            vaddr_start: 0x1100,
+            size: 0x100,
+        }),
+        Arc::new(SymbolInfo {
+            name: "beginning".to_string(),
+            vaddr_start: 0x1200,
+            size: 0x100,
+        }),
+        Arc::new(SymbolInfo {
+            name: "end".to_string(),
+            vaddr_start: 0x1300,
+            size: 0x100,
+        }),
+    ];
+
+    let mut outer = Frame::new(SAMPLE_RANGE.clone(), 0, symbols[0].clone());
+    let middle = Frame::new(INNER_RANGE1.clone(), 0, symbols[1].clone());
     outer.add_child(middle).unwrap();
     let beginning = Frame::new(
         MetricsRange::new(SAMPLE_RANGE.start, &(INNER_RANGE1.start - METRICS_ONE)),
         0,
-        TEST_SYMBOL.clone(),
+        symbols[2].clone(),
     );
     outer.add_child(beginning).unwrap();
     let end = Frame::new(
         MetricsRange::new(INNER_RANGE1_END + METRICS_ONE, &SAMPLE_RANGE_END),
         0,
-        TEST_SYMBOL.clone(),
+        symbols[3].clone(),
     );
     outer.add_child(end).unwrap();
 
-    Trace::new(vec![TEST_SYMBOL.clone()], outer, vec![])
+    Trace::new(symbols, outer, vec![])
 }
 
 pub(crate) fn new_frame(range: &MetricsRange) -> Frame {
     Frame::new(range.clone(), 0, TEST_SYMBOL.clone())
+}
+
+pub(crate) fn extract_pause_chunk<'a>(chunk: &'a Chunk) -> &'a MetricsRange {
+    match chunk {
+        Chunk::Pause(pause) => pause,
+        _ => panic!("Expected pause chunk"),
+    }
+}
+
+pub(crate) fn extract_frame_chunk<'a>(chunk: &'a Chunk) -> &'a Frame {
+    match chunk {
+        Chunk::Frame(frame) => frame,
+        _ => panic!("Expected frame chunk"),
+    }
 }
 
 #[test]

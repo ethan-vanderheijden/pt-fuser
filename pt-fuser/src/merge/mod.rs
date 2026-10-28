@@ -97,7 +97,7 @@ pub fn merge_traces(traces: &[&Trace], stats_generators: Vec<StatsGenerator>) ->
     info!("Merging frames for {} traces...", traces.len());
 
     let mut symbol_cache = SymbolCache::new(traces[0].num_symbols());
-    let root_idx = symbol_cache.get_or_insert((*frames[0].symbol).clone());
+    let root_idx = symbol_cache.get_or_insert((*frames[0].symbol()).clone());
 
     let latencies = frames
         .iter()
@@ -226,11 +226,11 @@ fn index_children<'a>(
             match chunk {
                 Chunk::Frame(frame) => {
                     let instance = seen_symbols
-                        .entry(&frame.symbol.name)
+                        .entry(&frame.symbol().name)
                         .and_modify(|x| *x += 1)
                         .or_insert(0);
                     let key = IdMapKey {
-                        symbol: Some(&frame.symbol.name),
+                        symbol: Some(&frame.symbol().name),
                         instance: *instance,
                     };
                     let id = symbol_ids.entry(key).or_insert_with(|| {
@@ -498,7 +498,7 @@ fn merge_children(
                         })
                         .collect::<Vec<_>>();
 
-                    let symbol = (*first_frame.original.symbol).clone();
+                    let symbol = (*first_frame.original.symbol()).clone();
                     let symbol_idx = symbol_cache.get_or_insert(symbol);
                     let symbol_rc = symbol_cache.get_ref(symbol_idx);
 

@@ -467,13 +467,13 @@ fn merge_frame_frequent_children() {
     let child_frame3 = extract_frame_chunk(&chunks[5]);
     assert_eq!(child_frame1.metrics.start, Metrics::constant(50 + 12));
     assert_eq!(child_frame1.metrics.end(), Metrics::constant(50 + 12 + 9));
-    assert_eq!(child_frame1.symbol.name, "a");
+    assert_eq!(child_frame1.symbol().name, "a");
     assert_eq!(child_frame2.metrics.start, Metrics::constant(50 + 40));
     assert_eq!(child_frame2.metrics.end(), Metrics::constant(50 + 40 + 1));
-    assert_eq!(child_frame2.symbol.name, "common");
+    assert_eq!(child_frame2.symbol().name, "common");
     assert_eq!(child_frame3.metrics.start, Metrics::constant(50 + 52));
     assert_eq!(child_frame3.metrics.end(), Metrics::constant(50 + 52 + 8));
-    assert_eq!(child_frame3.symbol.name, "b");
+    assert_eq!(child_frame3.symbol().name, "b");
 }
 
 #[test]
@@ -529,14 +529,14 @@ fn merge_frame_with_pauses() {
     let c = extract_frame_chunk(&chunks[6]);
     assert_eq!(a.metrics.start, Metrics::constant(20));
     assert_eq!(a.metrics.end(), Metrics::constant(20 + 15));
-    assert_eq!(a.symbol.name, "a");
+    assert_eq!(a.symbol().name, "a");
     assert_eq!(pause1.start, Metrics::constant(40));
     assert_eq!(pause1.end(), Metrics::constant(40 + 13));
     assert_eq!(pause2.start, Metrics::constant(53));
     assert_eq!(pause2.end(), Metrics::constant(53 + 10 - 3));
     assert_eq!(c.metrics.start, Metrics::constant(115));
     assert_eq!(c.metrics.end(), Metrics::constant(115 + 10));
-    assert_eq!(c.symbol.name, "c");
+    assert_eq!(c.symbol().name, "c");
 }
 
 #[test]
@@ -718,16 +718,11 @@ fn merge_frame_omits_noise_contribution_when_root_stddev_is_zero() {
 fn merge_frame_adds_noise_contribution_to_nested_frame_with_missing_traces() {
     let root_frames = (0..13)
         .map(|i| {
-            let mut outer = if i < 10 {
+            let outer = if i < 10 {
                 produce_frames_from_metrics((10, 80 + i * 3), &[(20, 30 + i, Some("a"))])
             } else {
                 produce_frames_from_metrics((10, 80 + i * 3), &[])
             };
-            outer.symbol = Arc::new(SymbolInfo {
-                name: "outer".to_string(),
-                vaddr_start: outer.symbol.vaddr_start,
-                size: outer.symbol.size,
-            });
 
             let mut root = new_frame(MetricsRange::new(
                 Metrics::constant(0),

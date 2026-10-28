@@ -110,7 +110,7 @@ fn main() {
     let mut data = Vec::new();
     for trace in &traces {
         if let Some(regex) = &regex {
-            let pred = |f: &Frame| regex.is_match(&f.symbol.name);
+            let pred = |f: &Frame| regex.is_match(&f.symbol().name);
             add_histogram_datapoint(
                 FrameFinder::new(trace.root_frame(), &pred),
                 trace,

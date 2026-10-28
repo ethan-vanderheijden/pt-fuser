@@ -9,7 +9,7 @@ use memmap2::Mmap;
 use pt_fuser::trace::SymbolInfo;
 use tracing::warn;
 
-use crate::{elf_image::Error::ElfParse, intel_pt::ImageProvider};
+use crate::{demangle::DemangleCache, elf_image::Error::ElfParse, intel_pt::ImageProvider};
 
 // for now, only support x86_64 PLT stubs since only x86_64 has Intel PT
 const X86_64_PLT0_SIZE: u64 = 0x10;
@@ -109,6 +109,7 @@ struct ElfInfo {
     // some ELFs (e.g., shared libraries) won't have PLT stubs
     plt_lookup: Option<PltLookup>,
     symbolizer: Symbolizer,
+    demangle_cache: DemangleCache,
 }
 
 #[derive(Debug)]
@@ -168,13 +169,13 @@ impl Mapping {
             .enable_auto_reload(false)
             .enable_code_info(false)
             .enable_inlined_fns(false)
-            .enable_demangling(true)
             .build();
         self.elf = match PltLookup::new(&mmap) {
             Ok(plt_lookup) => Some(ElfInfo {
                 cached_binary,
                 plt_lookup: Some(plt_lookup),
                 symbolizer,
+                demangle_cache: DemangleCache::new(),
             }),
             Err(e) => {
                 warn!("ELF file {} can't parse the PLT stubs: {}", self.path, e);
@@ -182,6 +183,7 @@ impl Mapping {
                     cached_binary,
                     plt_lookup: None,
                     symbolizer,
+                    demangle_cache: DemangleCache::new(),
                 })
             }
         };
@@ -217,25 +219,18 @@ impl Mapping {
         if self.elf.is_none() {
             self.prepare_elf()?;
         }
-        let elf = self.elf.as_ref().unwrap();
+        let elf = self.elf.as_mut().unwrap();
 
         let file_offset = self.file_offset + (vaddr - self.vaddr);
         if let Some(lookup) = &elf.plt_lookup
             && let Some(plt_sym) = lookup.lookup(file_offset)
         {
-            let sym_name = if let Ok(Ok(mut demangled)) =
-                cpp_demangle::Symbol::new(plt_sym).map(|s| s.demangle())
-            {
-                demangled.push_str("@plt");
-                demangled
-            } else if let Ok(demangled) = rustc_demangle::try_demangle(plt_sym) {
-                format!("{}@plt", demangled)
-            } else {
-                format!("{}@plt", plt_sym)
-            };
+            let mut demangled = elf.demangle_cache.demangle(plt_sym);
+            demangled.push_str("@plt");
+
             let aligned_vaddr = vaddr & !(X86_64_PLT_STUB_SIZE - 1);
             Ok(SymbolInfo {
-                name: sym_name,
+                name: demangled,
                 vaddr_start: aligned_vaddr,
                 size: X86_64_PLT_STUB_SIZE,
             })
@@ -250,8 +245,10 @@ impl Mapping {
                 Symbolized::Sym(sym) => {
                     // represents start of symbol in virtual address space
                     let virtual_addr_start = vaddr - sym.offset as u64;
+                    let demangled = elf.demangle_cache.demangle(sym.name.as_ref());
+
                     Ok(SymbolInfo {
-                        name: sym.name.to_string(),
+                        name: demangled,
                         vaddr_start: virtual_addr_start,
                         size: sym.size.unwrap_or(0) as u64,
                     })

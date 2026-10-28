@@ -164,7 +164,7 @@ fn run_filter<'a>(
 pub fn filter_traces(mut traces: Vec<Trace>, filter: &Filter) -> Vec<Trace> {
     traces.retain(|trace| {
         if let Some(target) = &filter.target {
-            let pred = |frame: &Frame| target.is_match(&frame.symbol.name);
+            let pred = |frame: &Frame| target.is_match(&frame.symbol().name);
             run_filter(FrameFinder::new(trace.root_frame(), &pred), filter, trace)
         } else {
             run_filter(iter::once(trace.root_frame()), filter, trace)
@@ -178,7 +178,7 @@ pub fn filter_bitmap(traces: &[Trace], filter: &Filter) -> Vec<bool> {
         .iter()
         .map(|trace| {
             if let Some(target) = &filter.target {
-                let pred = |frame: &Frame| target.is_match(&frame.symbol.name);
+                let pred = |frame: &Frame| target.is_match(&frame.symbol().name);
                 run_filter(FrameFinder::new(trace.root_frame(), &pred), filter, trace)
             } else {
                 run_filter(iter::once(trace.root_frame()), filter, trace)

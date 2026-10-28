@@ -347,12 +347,12 @@ impl<'a> Converter<'a> {
         progress_offset: u64,
         progress: &ProgressBar,
     ) {
-        let (is_new, iid) = self.interned_events.intern_string(&frame.symbol.name);
+        let (is_new, iid) = self.interned_events.intern_string(&frame.symbol().name);
         let mut intern_data = InternedData::default();
         if is_new {
             intern_data.event_names = vec![EventName {
                 iid: Some(iid),
-                name: Some(frame.symbol.name.clone()),
+                name: Some(frame.symbol().name.clone()),
             }];
         }
 

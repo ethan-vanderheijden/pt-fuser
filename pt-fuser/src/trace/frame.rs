@@ -110,9 +110,9 @@ impl<'a> Iterator for ChunkIterator<'a> {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Frame {
-    pub symbol_idx: usize,
+    symbol_idx: usize,
     #[serde(skip)]
-    pub symbol: Arc<SymbolInfo>,
+    symbol: Arc<SymbolInfo>,
     pub metrics: MetricsRange,
     #[serde(with = "ordered_annotations_serde")]
     pub annotations: Option<Box<IndexMap<String, Annotation>>>,
@@ -189,6 +189,11 @@ impl Frame {
             self.annotations = Some(Box::new(IndexMap::new()));
         }
         self.annotations.as_mut().unwrap()
+    }
+
+    #[inline]
+    pub fn symbol(&self) -> &SymbolInfo {
+        &self.symbol
     }
 
     #[inline]
@@ -313,7 +318,10 @@ impl StoredChunkSerializedFormat {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::trace::test::*;
+    use crate::trace::{
+        builder::{BuilderResult, TraceBuilder},
+        test::*,
+    };
 
     #[test]
     fn range_totals() {
@@ -527,5 +535,47 @@ mod test {
         let child = new_frame(&MetricsRange::new(end_off - METRICS_ONE, &end_off));
         outer.add_child(child).unwrap();
         assert!(outer.check_invariant());
+    }
+
+    #[test]
+    fn trace_builder_frame_names() {
+        let mut builder = TraceBuilder::new(
+            SAMPLE_RANGE.start,
+            SymbolInfo {
+                name: "func".to_string(),
+                vaddr_start: 0,
+                size: 0,
+            },
+        );
+        builder.push_frame(
+            INNER_RANGE1.start,
+            SymbolInfo {
+                name: "inner_func".to_string(),
+                vaddr_start: 0,
+                size: 0,
+            },
+        );
+        let BuilderResult::Builder(builder) =
+            builder.complete_frame(INNER_RANGE1_END, None).unwrap()
+        else {
+            panic!("Expected a builder");
+        };
+        let result = builder.complete_frame(SAMPLE_RANGE_END, None).unwrap();
+        match result {
+            BuilderResult::Completed(trace) => {
+                assert_eq!(trace.root_frame().symbol().name, "func");
+                let child = &trace.root_frame().chunks().nth(1).unwrap();
+                let child = extract_frame_chunk(child);
+                assert_eq!(child.symbol().name, "inner_func");
+
+                assert_eq!(trace.num_symbols(), 2);
+                assert!(Arc::ptr_eq(
+                    &trace.symbols[trace.root_frame().symbol_idx],
+                    &trace.root_frame().symbol
+                ));
+                assert!(Arc::ptr_eq(&trace.symbols[child.symbol_idx], &child.symbol));
+            }
+            _ => panic!("Expected completed trace"),
+        }
     }
 }

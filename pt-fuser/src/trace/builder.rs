@@ -35,7 +35,7 @@ impl IncompleteFrame {
         if options.remove_plt_stubs && self.children.len() == 1 {
             match &self.children[0] {
                 StoredChunk::Frame(child_frame)
-                    if is_plt_stub(&self.symbol, child_frame.symbol.as_ref()) =>
+                    if is_plt_stub(&self.symbol, child_frame.symbol()) =>
                 {
                     match self.children.remove(0) {
                         StoredChunk::Frame(mut child_frame) => {
@@ -261,58 +261,6 @@ mod test {
         }
     }
 
-    fn extract_pause_chunk<'a>(chunk: &'a Chunk) -> &'a MetricsRange {
-        match chunk {
-            Chunk::Pause(pause) => pause,
-            _ => panic!("Expected pause chunk"),
-        }
-    }
-
-    fn extract_frame_chunk<'a>(chunk: &'a Chunk) -> &'a Frame {
-        match chunk {
-            Chunk::Frame(frame) => frame,
-            _ => panic!("Expected frame chunk"),
-        }
-    }
-
-    #[test]
-    fn trace_frame_names() {
-        let mut builder = TraceBuilder::new(
-            SAMPLE_RANGE.start,
-            SymbolInfo {
-                name: "func".to_string(),
-                vaddr_start: 0,
-                size: 0,
-            },
-        );
-        builder.push_frame(
-            INNER_RANGE1.start,
-            SymbolInfo {
-                name: "inner_func".to_string(),
-                vaddr_start: 0,
-                size: 0,
-            },
-        );
-        let builder = extract_builder(builder.complete_frame(INNER_RANGE1_END, None).unwrap());
-        let result = builder.complete_frame(SAMPLE_RANGE_END, None).unwrap();
-        match result {
-            BuilderResult::Completed(trace) => {
-                assert_eq!(trace.root_frame().symbol.name, "func");
-                let child = trace.root_frame().chunks().nth(1).unwrap();
-                let child = extract_frame_chunk(&child);
-                assert_eq!(child.symbol.name, "inner_func");
-
-                assert_eq!(trace.num_symbols(), 2);
-                assert!(Arc::ptr_eq(
-                    &trace.symbols[trace.root_frame().symbol_idx],
-                    &trace.root_frame().symbol
-                ));
-                assert!(Arc::ptr_eq(&trace.symbols[child.symbol_idx], &child.symbol));
-            }
-            _ => panic!("Expected completed trace"),
-        }
-    }
-
     #[test]
     fn complete_empty_frame() {
         let incomplete = IncompleteFrame {
@@ -405,7 +353,7 @@ mod test {
                 },
             )
             .unwrap();
-        assert_eq!(completed.symbol.name, "my_func");
+        assert_eq!(completed.symbol().name, "my_func");
         assert_eq!(completed.metrics, *SAMPLE_RANGE);
         assert_eq!(completed.chunks().count(), 1);
     }
@@ -574,7 +522,7 @@ mod test {
                 let root_chunks = trace.root_frame().chunks().collect::<Vec<_>>();
                 assert_eq!(root_chunks.len(), 3);
                 let frame = extract_frame_chunk(&root_chunks[1]);
-                assert_eq!(frame.symbol.name, "my_func");
+                assert_eq!(frame.symbol().name, "my_func");
                 assert_eq!(
                     frame.metrics,
                     MetricsRange::new(INNER_RANGE1.start, &INNER_RANGE1_END)
@@ -669,13 +617,13 @@ mod test {
         match final_result {
             BuilderResult::Completed(trace) => {
                 assert_eq!(trace.num_symbols(), 2);
-                assert_eq!(trace.root_frame().symbol.as_ref(), &sym1);
+                assert_eq!(trace.root_frame().symbol(), &sym1);
                 let root_chunks = trace.root_frame().chunks().collect::<Vec<_>>();
                 let frame1 = extract_frame_chunk(&root_chunks[1]);
-                assert_eq!(frame1.symbol.as_ref(), &sym1);
+                assert_eq!(frame1.symbol(), &sym1);
                 let frame1_chunks = frame1.chunks().collect::<Vec<_>>();
                 let frame2 = extract_frame_chunk(&frame1_chunks[1]);
-                assert_eq!(frame2.symbol.as_ref(), &sym2);
+                assert_eq!(frame2.symbol(), &sym2);
             }
             BuilderResult::Builder(_) => panic!("Expected trace to be completed"),
         }

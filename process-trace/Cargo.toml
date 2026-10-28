@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-blazesym = { version = "0.2.6", features = ["demangle"], default-features = false }
+blazesym = { version = "0.2.6", default-features = false }
 clap = { version = "4.6.7", features = ["derive"] }
 cpp_demangle = "0.5.1"
 fallible-iterator = "0.3.0"

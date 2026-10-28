@@ -557,11 +557,9 @@ version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "847a0a95b041ad5aae1bdc44f2bd54743f76eb0065c4f86b139f81343c287eaf"
 dependencies = [
- "cpp_demangle",
  "crc32fast",
  "libc",
  "memmap2",
- "rustc-demangle",
  "tempfile",
 ]
 
