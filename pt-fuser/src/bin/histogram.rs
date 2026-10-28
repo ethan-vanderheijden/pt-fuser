@@ -7,7 +7,7 @@ use pt_fuser::{
         filter::{self, Filter},
         histogram::{Histogram, HistogramASCII},
     },
-    trace::{Frame, Trace, trace_error},
+    trace::{Trace, frame::Frame, trace_error},
 };
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use regex::Regex;

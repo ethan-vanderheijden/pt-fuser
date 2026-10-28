@@ -10,8 +10,9 @@ use crate::{
         },
     },
     trace::{
-        Annotation, Chunk, Event, Frame, SymbolInfo, Trace,
+        Event, SymbolInfo, Trace,
         builder::SymbolCache,
+        frame::{Annotation, Chunk, Frame},
         metrics::{Metrics, MetricsRange},
     },
 };

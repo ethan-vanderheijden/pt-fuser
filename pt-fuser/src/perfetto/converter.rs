@@ -19,7 +19,11 @@ use perfetto_rust::{
 
 use crate::{
     perfetto::PauseRenderOption,
-    trace::{Annotation, Chunk, Frame, Trace, metrics::MetricsRange},
+    trace::{
+        Trace,
+        frame::{Annotation, Chunk, Frame},
+        metrics::MetricsRange,
+    },
 };
 
 pub const PROGRESS_STYLE_TEMPLATE: &str =

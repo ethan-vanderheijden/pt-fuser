@@ -13,8 +13,9 @@ use tracing::{info, warn};
 use crate::{
     merge::stats::StatsGenerator,
     trace::{
-        Annotation, Chunk, Event, Frame, Trace,
+        Event, Trace,
         builder::SymbolCache,
+        frame::{Annotation, Chunk, Frame},
         metrics::{Metrics, MetricsRange},
         trace_error,
     },

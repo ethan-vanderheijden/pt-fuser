@@ -1,6 +1,9 @@
 use crate::{
     analysis,
-    trace::{Annotation, Chunk, Frame, Trace},
+    trace::{
+        Trace,
+        frame::{Annotation, Chunk, Frame},
+    },
 };
 
 pub(super) const ANNOTATION_STATS_CATEGORY: &str = "Merging Stats";

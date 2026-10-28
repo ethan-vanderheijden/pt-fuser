@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use bloomfilter::Bloom;
 
-use crate::trace::{self, Event, Frame, Metrics, MetricsRange, StoredChunk, SymbolInfo, Trace};
+use crate::trace::{
+    self, Event, Frame, Metrics, MetricsRange, SymbolInfo, Trace, frame::StoredChunk,
+};
 
 #[derive(Clone, Copy, Default)]
 pub struct FrameCompletionOptions {
@@ -249,10 +251,8 @@ impl SymbolCache {
 
 #[cfg(test)]
 mod test {
-    use crate::trace::test::{INNER_RANGE1_END, SAMPLE_RANGE_END};
-
     use super::*;
-    use trace::{Chunk, test::*};
+    use trace::{frame::Chunk, test::*};
 
     fn extract_builder(result: BuilderResult) -> TraceBuilder {
         match result {
@@ -420,7 +420,7 @@ mod test {
                 assert_eq!(trace.root.chunks().count(), 1);
                 assert!(matches!(
                     trace.root.chunks().next().unwrap(),
-                    trace::Chunk::Straightline(_)
+                    Chunk::Straightline(_)
                 ));
             }
             BuilderResult::Builder(_) => panic!("Expected trace to be completed"),
@@ -440,15 +440,15 @@ mod test {
             BuilderResult::Completed(trace) => {
                 let root_chunks = trace.root.chunks().collect::<Vec<_>>();
                 assert_eq!(root_chunks.len(), 4);
-                assert!(matches!(root_chunks[0], trace::Chunk::Straightline(_)));
-                assert!(matches!(root_chunks[2], trace::Chunk::Straightline(_)));
+                assert!(matches!(root_chunks[0], Chunk::Straightline(_)));
+                assert!(matches!(root_chunks[2], Chunk::Straightline(_)));
 
                 let frame1 = extract_frame_chunk(&root_chunks[1]);
                 assert_eq!(frame1.metrics, *INNER_RANGE1);
                 assert_eq!(frame1.chunks().count(), 1);
                 assert!(matches!(
                     frame1.chunks().next().unwrap(),
-                    trace::Chunk::Straightline(_)
+                    Chunk::Straightline(_)
                 ));
 
                 let frame2 = extract_frame_chunk(&root_chunks[3]);
@@ -458,14 +458,14 @@ mod test {
                 );
                 let frame2_chunks = frame2.chunks().collect::<Vec<_>>();
                 assert_eq!(frame2_chunks.len(), 2);
-                assert!(matches!(frame2_chunks[1], trace::Chunk::Straightline(_)));
+                assert!(matches!(frame2_chunks[1], Chunk::Straightline(_)));
 
                 let inner_frame = extract_frame_chunk(&frame2_chunks[0]);
                 assert_eq!(inner_frame.metrics, *INNER_RANGE2);
                 assert_eq!(inner_frame.chunks().count(), 1);
                 assert!(matches!(
                     inner_frame.chunks().next().unwrap(),
-                    trace::Chunk::Straightline(_)
+                    Chunk::Straightline(_)
                 ));
             }
             BuilderResult::Builder(_) => panic!("Expected trace to be completed"),
@@ -496,9 +496,9 @@ mod test {
             BuilderResult::Completed(trace) => {
                 let root_chunks = trace.root_frame().chunks().collect::<Vec<_>>();
                 assert_eq!(root_chunks.len(), 5);
-                assert!(matches!(root_chunks[0], trace::Chunk::Straightline(_)));
-                assert!(matches!(root_chunks[2], trace::Chunk::Straightline(_)));
-                assert!(matches!(root_chunks[4], trace::Chunk::Straightline(_)));
+                assert!(matches!(root_chunks[0], Chunk::Straightline(_)));
+                assert!(matches!(root_chunks[2], Chunk::Straightline(_)));
+                assert!(matches!(root_chunks[4], Chunk::Straightline(_)));
 
                 let pause = extract_pause_chunk(&root_chunks[1]);
                 assert_eq!(
@@ -517,8 +517,8 @@ mod test {
 
                 let frame_chunks = frame.chunks().collect::<Vec<_>>();
                 assert_eq!(frame_chunks.len(), 3);
-                assert!(matches!(frame_chunks[0], trace::Chunk::Straightline(_)));
-                assert!(matches!(frame_chunks[2], trace::Chunk::Straightline(_)));
+                assert!(matches!(frame_chunks[0], Chunk::Straightline(_)));
+                assert!(matches!(frame_chunks[2], Chunk::Straightline(_)));
 
                 let nested_pause = extract_pause_chunk(&frame_chunks[1]);
                 assert_eq!(

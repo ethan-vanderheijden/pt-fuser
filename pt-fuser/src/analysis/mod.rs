@@ -3,7 +3,7 @@ pub mod histogram;
 
 use std::fmt::Display;
 
-use crate::trace::{Chunk, Frame};
+use crate::trace::frame::{Chunk, Frame};
 
 pub struct FrameFinder<'a, 'b, P>
 where

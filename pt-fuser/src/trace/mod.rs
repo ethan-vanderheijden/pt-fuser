@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod frame;
 pub mod metrics;
 pub mod trace_error;
 
@@ -12,44 +13,12 @@ use std::{
 };
 
 use bincode_next::config;
-use indexmap::IndexMap;
-use serde::{Deserialize, Serialize, de::Error as DeError, ser::Error as SerError};
-use thin_vec::ThinVec;
+use serde::{Deserialize, Serialize};
 
-use crate::trace::metrics::{Metrics, MetricsRange};
-
-mod ordered_annotations_serde {
-    use super::*;
-    use serde::{Deserializer, Serializer};
-
-    pub fn serialize<S>(
-        value: &Option<Box<IndexMap<String, Annotation>>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        #[derive(Serialize)]
-        struct Helper<'a>(
-            #[serde(with = "indexmap::map::serde_seq")] &'a IndexMap<String, Annotation>,
-        );
-
-        value.as_ref().map(|v| Helper(v)).serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> Result<Option<Box<IndexMap<String, Annotation>>>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct Helper(#[serde(with = "indexmap::map::serde_seq")] IndexMap<String, Annotation>);
-
-        let helper = Option::deserialize(deserializer)?;
-        Ok(helper.map(|Helper(external)| Box::new(external)))
-    }
-}
+use crate::trace::{
+    frame::{Frame, FrameSerializedFormat},
+    metrics::{Metrics, MetricsRange},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SymbolInfo {
@@ -73,222 +42,6 @@ impl Display for SymbolInfo {
             self.vaddr_start + self.size,
             self.name
         )
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Annotation {
-    Bool(bool),
-    Uint64(u64),
-    Int64(i64),
-    /// Displayed differently from Uint64 in Perfetto UI
-    Pointer(u64),
-    Double(f64),
-    String(String),
-    Array(Vec<Annotation>),
-    #[serde(with = "indexmap::map::serde_seq")]
-    Map(IndexMap<String, Annotation>),
-}
-
-struct ChunkIterator<'a> {
-    curr_metrics: Metrics,
-    ending_metric: Metrics,
-    chunks: &'a [StoredChunk],
-    index: usize,
-}
-
-impl ChunkIterator<'_> {
-    fn new<'a>(overall_metrics: &MetricsRange, chunks: &'a [StoredChunk]) -> ChunkIterator<'a> {
-        ChunkIterator {
-            curr_metrics: overall_metrics.start,
-            ending_metric: overall_metrics.end(),
-            chunks,
-            index: 0,
-        }
-    }
-}
-
-impl<'a> Iterator for ChunkIterator<'a> {
-    type Item = Chunk<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.chunks.len() {
-            let chunk = &self.chunks[self.index];
-
-            if chunk.metrics().start.ts > self.curr_metrics.ts
-                || chunk.metrics().start.cycles > self.curr_metrics.cycles
-                || chunk.metrics().start.insn_count > self.curr_metrics.insn_count
-            {
-                let straightline = MetricsRange::new(self.curr_metrics, &chunk.metrics().start);
-                self.curr_metrics = chunk.metrics().start;
-                Some(Chunk::Straightline(straightline))
-            } else {
-                self.curr_metrics = chunk.metrics().end();
-                self.index += 1;
-                Some(chunk.to_chunk())
-            }
-        } else {
-            if self.ending_metric.ts > self.curr_metrics.ts
-                || self.ending_metric.cycles > self.curr_metrics.cycles
-                || self.ending_metric.insn_count > self.curr_metrics.insn_count
-            {
-                let straightline = MetricsRange::new(self.curr_metrics, &self.ending_metric);
-                self.curr_metrics = self.ending_metric;
-                Some(Chunk::Straightline(straightline))
-            } else {
-                None
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Frame {
-    pub symbol_idx: usize,
-    #[serde(skip)]
-    pub symbol: Arc<SymbolInfo>,
-    pub metrics: MetricsRange,
-    #[serde(with = "ordered_annotations_serde")]
-    pub annotations: Option<Box<IndexMap<String, Annotation>>>,
-    // To stay memory efficient, only store chunks for Frames, Pauses, etc.
-    // Straightline chunks will be injected on the fly when calling chunks() function
-    chunks: ThinVec<StoredChunk>,
-}
-
-impl Display for Frame {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} ({} - {})",
-            self.symbol,
-            self.metrics.start,
-            self.metrics.end()
-        )
-    }
-}
-
-impl Frame {
-    pub fn new(metrics: MetricsRange, symbol_idx: usize, symbol: Arc<SymbolInfo>) -> Self {
-        Self {
-            symbol_idx,
-            symbol,
-            metrics,
-            annotations: None,
-            chunks: ThinVec::new(),
-        }
-    }
-
-    fn insert_chunk(&mut self, chunk: StoredChunk) -> Result<(), Error> {
-        // Iterate backwards through existing chunks
-        // that way, inserting chunks in chronological order is O(n)
-        let chunk_end = chunk.metrics().end();
-        let mut straightline_end = self.metrics.end();
-        for i in (0..self.chunks.len()).rev() {
-            if straightline_end.ts < chunk_end.ts
-                || straightline_end.cycles < chunk_end.cycles
-                || straightline_end.insn_count < chunk_end.insn_count
-            {
-                return Err(Error::InvalidRange(chunk.metrics().clone()));
-            }
-
-            let existing_chunk = &self.chunks[i];
-            let straightline = MetricsRange::new(existing_chunk.metrics().end(), &straightline_end);
-            if straightline.includes_range(chunk.metrics()) {
-                self.chunks.insert(i + 1, chunk);
-                return Ok(());
-            }
-
-            straightline_end = existing_chunk.metrics().start;
-        }
-
-        let straightline = MetricsRange::new(self.metrics.start, &straightline_end);
-        if straightline.includes_range(chunk.metrics()) {
-            self.chunks.insert(0, chunk);
-            return Ok(());
-        }
-
-        Err(Error::InvalidRange(chunk.metrics().clone()))
-    }
-
-    pub fn add_child(&mut self, child: Frame) -> Result<(), Error> {
-        self.insert_chunk(child.into())
-    }
-
-    pub fn add_pause(&mut self, pause: MetricsRange) -> Result<(), Error> {
-        self.insert_chunk(StoredChunk::Pause(pause))
-    }
-
-    pub fn get_or_default_annotation(&mut self) -> &mut IndexMap<String, Annotation> {
-        if self.annotations.is_none() {
-            self.annotations = Some(Box::new(IndexMap::new()));
-        }
-        self.annotations.as_mut().unwrap()
-    }
-
-    #[inline]
-    pub fn chunks(&'_ self) -> impl Iterator<Item = Chunk<'_>> {
-        ChunkIterator::new(&self.metrics, &self.chunks)
-    }
-
-    // INVARIANT: sum of time, cycles, and insn across all children must equal this frame's time, cycles, and insn
-    pub fn check_invariant(&self) -> bool {
-        let mut total_time = 0;
-        let mut total_cycles = 0;
-        let mut total_insn = 0;
-        for chunk in self.chunks() {
-            total_time += chunk.metrics().total_time();
-            total_cycles += chunk.metrics().total_cycles();
-            total_insn += chunk.metrics().total_insn();
-        }
-
-        total_time == self.metrics.total_time()
-            && total_cycles == self.metrics.total_cycles()
-            && total_insn == self.metrics.total_insn()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-enum StoredChunk {
-    Frame(Frame),
-    Pause(MetricsRange),
-}
-
-impl StoredChunk {
-    fn metrics(&self) -> &MetricsRange {
-        match self {
-            StoredChunk::Frame(frame) => &frame.metrics,
-            StoredChunk::Pause(pause) => pause,
-        }
-    }
-
-    fn to_chunk(&'_ self) -> Chunk<'_> {
-        match self {
-            StoredChunk::Frame(frame) => Chunk::Frame(frame),
-            StoredChunk::Pause(pause) => Chunk::Pause(pause),
-        }
-    }
-}
-
-impl From<Frame> for StoredChunk {
-    fn from(frame: Frame) -> Self {
-        StoredChunk::Frame(frame)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Chunk<'a> {
-    Frame(&'a Frame),
-    Straightline(MetricsRange),
-    Pause(&'a MetricsRange),
-}
-
-impl Chunk<'_> {
-    pub fn metrics(&self) -> MetricsRange {
-        match self {
-            Chunk::Frame(frame) => frame.metrics.clone(),
-            Chunk::Straightline(straightline) => straightline.clone(),
-            Chunk::Pause(pause) => (*pause).clone(),
-        }
     }
 }
 
@@ -390,13 +143,9 @@ impl Trace {
         config::standard()
     }
 
-    pub fn bin_serialize(
-        &self,
-        writer: &mut impl Write,
-        compress: bool,
-    ) -> Result<(), bincode_next::error::EncodeError> {
+    pub fn bin_serialize(&self, writer: &mut impl Write, compress: bool) -> Result<(), Error> {
         let (major, minor) =
-            Self::get_major_minor().map_err(bincode_next::error::EncodeError::custom)?;
+            Self::get_major_minor().map_err(|s| Error::Serialization(s.to_string()))?;
         let data = major
             .to_be_bytes()
             .iter()
@@ -404,116 +153,32 @@ impl Trace {
             .chain(Self::VERSION_DELIMITER.to_be_bytes().iter())
             .copied()
             .collect::<Vec<u8>>();
-        writer
-            .write_all(&data)
-            .map_err(bincode_next::error::EncodeError::custom)?;
+        writer.write_all(&data).map_err(Error::Io)?;
 
         if compress {
-            let mut zstd_compressor = zstd::stream::Encoder::new(writer, 0)
-                .map_err(bincode_next::error::EncodeError::custom)?;
+            let mut zstd_compressor = zstd::stream::Encoder::new(writer, 0).map_err(Error::Io)?;
             bincode_next::serde::encode_into_std_write(
                 self,
                 &mut zstd_compressor,
                 Self::bincode_config(),
-            )?;
-            let remaining_writer = zstd_compressor
-                .finish()
-                .map_err(bincode_next::error::EncodeError::custom)?;
-            remaining_writer
-                .flush()
-                .map_err(bincode_next::error::EncodeError::custom)?;
+            )
+            .map_err(Error::BincodeEncode)?;
+            let remaining_writer = zstd_compressor.finish().map_err(Error::Io)?;
+            remaining_writer.flush().map_err(Error::Io)?;
         } else {
-            bincode_next::serde::encode_into_std_write(self, writer, Self::bincode_config())?;
-            writer
-                .flush()
-                .map_err(bincode_next::error::EncodeError::custom)?;
+            bincode_next::serde::encode_into_std_write(self, writer, Self::bincode_config())
+                .map_err(Error::BincodeEncode)?;
+            writer.flush().map_err(Error::Io)?;
         }
         Ok(())
     }
 
-    fn deserialize_trace(reader: &mut impl Read) -> Result<Self, bincode_next::error::DecodeError> {
-        // Helper defs that mirror the serialized shape but are deserializable
-        #[derive(Deserialize)]
-        struct TraceDef {
-            symbols: Vec<SymbolInfo>,
-            root: FrameDef,
-            events: Vec<Event>,
-        }
-
-        #[derive(Deserialize)]
-        struct FrameDef {
-            symbol_idx: usize,
-            metrics: MetricsRange,
-            #[serde(with = "ordered_annotations_serde")]
-            annotations: Option<Box<IndexMap<String, Annotation>>>,
-            chunks: ThinVec<StoredChunkDef>,
-        }
-
-        #[derive(Deserialize)]
-        enum StoredChunkDef {
-            Frame(FrameDef),
-            Pause(MetricsRange),
-        }
-
-        let traces_def: TraceDef =
-            bincode_next::serde::decode_from_std_read(reader, Self::bincode_config())?;
-
-        let symbols: Vec<Arc<SymbolInfo>> = traces_def.symbols.into_iter().map(Arc::new).collect();
-
-        fn build_frame(
-            def: FrameDef,
-            symbols: &Vec<Arc<SymbolInfo>>,
-        ) -> Result<Frame, bincode_next::error::DecodeError> {
-            if def.symbol_idx >= symbols.len() {
-                return Err(bincode_next::error::DecodeError::custom(format!(
-                    "Invalid symbol index {} for frame, only {} symbols available",
-                    def.symbol_idx,
-                    symbols.len()
-                )));
-            }
-
-            let symbol_arc = Arc::clone(&symbols[def.symbol_idx]);
-            let frame = Frame {
-                symbol_idx: def.symbol_idx,
-                symbol: symbol_arc,
-                metrics: def.metrics,
-                annotations: def.annotations,
-                chunks: def
-                    .chunks
-                    .into_iter()
-                    .map(|chunk_def| match chunk_def {
-                        StoredChunkDef::Frame(frame_def) => {
-                            let child_frame = build_frame(frame_def, symbols)?;
-                            Ok(StoredChunk::Frame(child_frame))
-                        }
-                        StoredChunkDef::Pause(pause) => Ok(StoredChunk::Pause(pause)),
-                    })
-                    .collect::<Result<_, bincode_next::error::DecodeError>>()?,
-            };
-
-            Ok(frame)
-        }
-
-        let root = build_frame(traces_def.root, &symbols)?;
-
-        Ok(Trace {
-            symbols,
-            root,
-            events: traces_def.events,
-        })
-    }
-
-    pub fn bin_deserialize(
-        reader: &mut impl Read,
-        decompress: bool,
-    ) -> Result<Self, bincode_next::error::DecodeError> {
+    pub fn bin_deserialize(reader: &mut impl Read, decompress: bool) -> Result<Self, Error> {
         let mut version_info = [0u8; 8];
-        reader
-            .read_exact(&mut version_info)
-            .map_err(bincode_next::error::DecodeError::custom)?;
+        reader.read_exact(&mut version_info).map_err(Error::Io)?;
 
         let (tool_major, tool_minor) =
-            Self::get_major_minor().map_err(bincode_next::error::DecodeError::custom)?;
+            Self::get_major_minor().map_err(|s| Error::Deserialization(s.to_string()))?;
         let trace_major = u16::from_be_bytes([version_info[0], version_info[1]]);
         let trace_minor = u16::from_be_bytes([version_info[2], version_info[3]]);
         let trace_delimiter = u32::from_be_bytes([
@@ -523,29 +188,59 @@ impl Trace {
             version_info[7],
         ]);
         if trace_delimiter != Self::VERSION_DELIMITER {
-            return Err(bincode_next::error::DecodeError::custom(
-                "Trace data is corrupted, version delimiter is incorrect!",
+            return Err(Error::Deserialization(
+                "Trace data is corrupted, version delimiter is incorrect!".to_string(),
             ));
         }
         if trace_major != tool_major || trace_minor != tool_minor {
-            return Err(bincode_next::error::DecodeError::custom(format!(
+            return Err(Error::Deserialization(format!(
                 "Version mismatch: trace data is v{}.{} but tool is v{}.{}",
                 trace_major, trace_minor, tool_major, tool_minor
             )));
         }
 
-        if decompress {
-            let mut zstd_decompressor = zstd::stream::Decoder::new(reader)
-                .map_err(bincode_next::error::DecodeError::custom)?;
-            Self::deserialize_trace(&mut zstd_decompressor)
+        let trace_format: TraceSerializedFormat = if decompress {
+            let mut zstd_decompressor = zstd::stream::Decoder::new(reader).map_err(Error::Io)?;
+            bincode_next::serde::decode_from_std_read(
+                &mut zstd_decompressor,
+                Self::bincode_config(),
+            )
+            .map_err(Error::BincodeDecode)?
         } else {
-            Self::deserialize_trace(reader)
-        }
+            bincode_next::serde::decode_from_std_read(reader, Self::bincode_config())
+                .map_err(Error::BincodeDecode)?
+        };
+        trace_format.into_trace()
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+// helper struct that mirrors the wire format of a trace, only for internal use when deserializing
+#[derive(Deserialize)]
+struct TraceSerializedFormat {
+    symbols: Vec<SymbolInfo>,
+    root: FrameSerializedFormat,
+    events: Vec<Event>,
+}
+
+impl TraceSerializedFormat {
+    fn into_trace(self) -> Result<Trace, Error> {
+        let symbols: Vec<Arc<SymbolInfo>> = self.symbols.into_iter().map(Arc::new).collect();
+        let converted_root = self.root.into_frame(&symbols)?;
+        Ok(Trace {
+            symbols,
+            root: converted_root,
+            events: self.events,
+        })
+    }
+}
+
+#[derive(Debug)]
 pub enum Error {
+    Io(std::io::Error),
+    Serialization(String),
+    Deserialization(String),
+    BincodeEncode(bincode_next::error::EncodeError),
+    BincodeDecode(bincode_next::error::DecodeError),
     InvalidRange(MetricsRange),
     NotSorted,
 }
@@ -553,6 +248,11 @@ pub enum Error {
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Error::Io(e) => write!(f, "I/O error: {}", e),
+            Error::Serialization(e) => write!(f, "Serialization error: {}", e),
+            Error::Deserialization(e) => write!(f, "Deserialization error: {}", e),
+            Error::BincodeEncode(e) => write!(f, "Bincode encode error: {}", e),
+            Error::BincodeDecode(e) => write!(f, "Bincode decode error: {}", e),
             Error::InvalidRange(range) => write!(f, "Invalid range: {}", range),
             Error::NotSorted => write!(f, "Occurences are not sorted by timestamp"),
         }
