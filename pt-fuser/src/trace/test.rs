@@ -128,7 +128,7 @@ fn serialize_round_trip_nocompress() {
     let trace = test_trace();
     let mut data_buf = Vec::new();
     trace.bin_serialize(&mut data_buf, false).unwrap();
-    let deserialized = Trace::bin_deserialize(&mut data_buf.as_slice(), false).unwrap();
+    let deserialized = Trace::bin_deserialize(&mut data_buf.as_slice()).unwrap();
 
     assert_eq!(deserialized.root_frame().chunks().count(), 5);
     assert!(deserialized.root_frame().check_invariant());
@@ -139,7 +139,7 @@ fn serialize_round_trip_compress() {
     let trace = test_trace();
     let mut data_buf = Vec::new();
     trace.bin_serialize(&mut data_buf, true).unwrap();
-    let deserialized = Trace::bin_deserialize(&mut data_buf.as_slice(), true).unwrap();
+    let deserialized = Trace::bin_deserialize(&mut data_buf.as_slice()).unwrap();
 
     assert_eq!(deserialized.root_frame().chunks().count(), 5);
     assert!(deserialized.root_frame().check_invariant());
@@ -165,7 +165,7 @@ fn serialize_round_trip_compress_annotations() {
     let mut data_buf = Vec::new();
     trace.bin_serialize(&mut data_buf, true).unwrap();
 
-    let deserialized = Trace::bin_deserialize(&mut data_buf.as_slice(), true).unwrap();
+    let deserialized = Trace::bin_deserialize(&mut data_buf.as_slice()).unwrap();
     let deserialized_root = &deserialized.root;
     let deserialized_annotations = deserialized_root.annotations.as_ref().unwrap();
     assert!(deserialized_annotations.keys().eq(ground_truth.keys()));

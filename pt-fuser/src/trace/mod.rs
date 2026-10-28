@@ -13,6 +13,7 @@ use std::{
 };
 
 use bincode_next::config;
+use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 
 use crate::trace::{
@@ -91,6 +92,12 @@ impl Event {
     }
 }
 
+bitflags! {
+    struct TraceFlags: u32 {
+        const COMPRESSED = 0b1;
+    }
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct Trace {
     symbols: Vec<Arc<SymbolInfo>>,
@@ -100,10 +107,31 @@ pub struct Trace {
 
 impl Trace {
     // versioning is vX.Y.Z where vX.Y represent the trace format version
-    // in trace serialization, first 16 bits are X, next 16 bits are Y,
-    // and next 32 bits are VERSION_DELIMITER (all in big-endian)
-    // after that, the actual trace data begins
+    //
+    // The vX.Y version and flags are stored at the beginning of the trace file:
+    // (are items are stored in big-endian format)
+    //
+    //  0 bits                         32 bits
+    //    |--------------------------------|
+    //    |     X (16)     |    Y (16)     |
+    //    +--------------------------------+
+    //    |        VERSION_DELIMITER       |
+    //    |            (32 bits)           |
+    //    +--------------------------------+
+    //    |             Flags              |
+    //    |           (32 bits)            |
+    //    +--------------------------------+
+    //    |          FLAG_DELIMITER        |
+    //    |           (32 bits)            |
+    //    +--------------------------------+
+    //    |             Data               |
+    //    |        (remaining bits)        |
+    //    |              ...               |
+    //    v                                v
     const VERSION_DELIMITER: u32 = 0xDEADBEEF;
+    const FLAG_DELIMITER: u32 = 0xFEEDFACE;
+
+    pub const RECOMMENDED_EXTENSION: &'static str = "bin.zst";
 
     pub fn new(symbols: Vec<Arc<SymbolInfo>>, root: Frame, events: Vec<Event>) -> Self {
         Self {
@@ -146,11 +174,16 @@ impl Trace {
     pub fn bin_serialize(&self, writer: &mut impl Write, compress: bool) -> Result<(), Error> {
         let (major, minor) =
             Self::get_major_minor().map_err(|s| Error::Serialization(s.to_string()))?;
+        let mut flags = TraceFlags::empty();
+        flags.set(TraceFlags::COMPRESSED, compress);
+
         let data = major
             .to_be_bytes()
             .iter()
             .chain(minor.to_be_bytes().iter())
             .chain(Self::VERSION_DELIMITER.to_be_bytes().iter())
+            .chain(flags.bits().to_be_bytes().iter())
+            .chain(Self::FLAG_DELIMITER.to_be_bytes().iter())
             .copied()
             .collect::<Vec<u8>>();
         writer.write_all(&data).map_err(Error::Io)?;
@@ -173,33 +206,38 @@ impl Trace {
         Ok(())
     }
 
-    pub fn bin_deserialize(reader: &mut impl Read, decompress: bool) -> Result<Self, Error> {
-        let mut version_info = [0u8; 8];
-        reader.read_exact(&mut version_info).map_err(Error::Io)?;
+    pub fn bin_deserialize(reader: &mut impl Read) -> Result<Self, Error> {
+        let mut header = [0u8; 16];
+        reader.read_exact(&mut header).map_err(Error::Io)?;
 
         let (tool_major, tool_minor) =
             Self::get_major_minor().map_err(|s| Error::Deserialization(s.to_string()))?;
-        let trace_major = u16::from_be_bytes([version_info[0], version_info[1]]);
-        let trace_minor = u16::from_be_bytes([version_info[2], version_info[3]]);
-        let trace_delimiter = u32::from_be_bytes([
-            version_info[4],
-            version_info[5],
-            version_info[6],
-            version_info[7],
-        ]);
-        if trace_delimiter != Self::VERSION_DELIMITER {
-            return Err(Error::Deserialization(
-                "Trace data is corrupted, version delimiter is incorrect!".to_string(),
-            ));
-        }
+        let trace_major = u16::from_be_bytes([header[0], header[1]]);
+        let trace_minor = u16::from_be_bytes([header[2], header[3]]);
+        let version_delimiter = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        let flags = TraceFlags::from_bits_truncate(u32::from_be_bytes([
+            header[8], header[9], header[10], header[11],
+        ]));
+        let flag_delimiter = u32::from_be_bytes([header[12], header[13], header[14], header[15]]);
+
         if trace_major != tool_major || trace_minor != tool_minor {
             return Err(Error::Deserialization(format!(
                 "Version mismatch: trace data is v{}.{} but tool is v{}.{}",
                 trace_major, trace_minor, tool_major, tool_minor
             )));
         }
+        if version_delimiter != Self::VERSION_DELIMITER {
+            return Err(Error::Deserialization(
+                "Trace data is corrupted, version delimiter is incorrect!".to_string(),
+            ));
+        }
+        if flag_delimiter != Self::FLAG_DELIMITER {
+            return Err(Error::Deserialization(
+                "Trace data is corrupted, flag delimiter is incorrect!".to_string(),
+            ));
+        }
 
-        let trace_format: TraceSerializedFormat = if decompress {
+        let trace_format: TraceSerializedFormat = if flags.contains(TraceFlags::COMPRESSED) {
             let mut zstd_decompressor = zstd::stream::Decoder::new(reader).map_err(Error::Io)?;
             bincode_next::serde::decode_from_std_read(
                 &mut zstd_decompressor,

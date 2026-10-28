@@ -28,20 +28,6 @@ use tracing::{Level, info};
 struct Cli {
     #[clap(
         long,
-        short = 'i',
-        default_value_t = false,
-        help = "Whether the input trace files are compressed (zstd)"
-    )]
-    compressed_input: bool,
-    #[clap(
-        long,
-        short = 'o',
-        default_value_t = false,
-        help = "Whether to compress the output trace file (zstd)"
-    )]
-    compressed_output: bool,
-    #[clap(
-        long,
         default_value_t = true,
         help = "Record basic statistics (quartiles, mean, stddev) for each merged frame as an annotation"
     )]
@@ -90,8 +76,7 @@ fn main() -> ExitCode {
         .map(|input| {
             let trace_data = File::open(input).expect("Failed to read pt-fuser trace file");
             let mut trace_data = BufReader::with_capacity(64 * 1024, trace_data);
-            Trace::bin_deserialize(&mut trace_data, cli.compressed_input)
-                .expect("pt-fuser trace file is malformed")
+            Trace::bin_deserialize(&mut trace_data).expect("pt-fuser trace file is malformed")
         })
         .collect::<Vec<Trace>>();
 
@@ -134,7 +119,7 @@ fn main() -> ExitCode {
     let output_file = File::create(cli.output).expect("Failed to create output file");
     let mut output_file = BufWriter::with_capacity(64 * 1024, output_file);
     merged_trace
-        .bin_serialize(&mut output_file, cli.compressed_output)
+        .bin_serialize(&mut output_file, true)
         .expect("Failed to serialize merge trace");
 
     ExitCode::SUCCESS

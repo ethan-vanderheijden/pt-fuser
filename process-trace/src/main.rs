@@ -12,7 +12,7 @@ use std::{
 use clap::Parser;
 use fallible_iterator::FallibleIterator;
 use libipt::image::Image;
-use pt_fuser::trace::builder::FrameCompletionOptions;
+use pt_fuser::trace::{Trace, builder::FrameCompletionOptions};
 use regex::Regex;
 use threadpool::ThreadPool;
 use tracing::{Level, info};
@@ -39,13 +39,6 @@ pub struct Args {
         help = "Remove @plt stub functions from cluttering up the trace"
     )]
     remove_plt_stubs: bool,
-    #[clap(
-        long,
-        short = 'o',
-        default_value_t = true,
-        help = "Whether to compress the output trace files (zstd)"
-    )]
-    compress_output: bool,
 }
 
 fn main() {
@@ -101,13 +94,18 @@ fn main() {
         {
             let output_dir2 = output_dir.to_path_buf();
             threadpool.execute(move || {
-                let filename = format!("trace-{}-{}.bin", raw_data.tid, i);
+                let filename = format!(
+                    "trace-{}-{}.{}",
+                    raw_data.tid,
+                    i,
+                    Trace::RECOMMENDED_EXTENSION
+                );
                 let path = output_dir2.join(filename);
 
                 let output_file = File::create(&path).expect("Failed to create output file");
                 let mut output_file = BufWriter::with_capacity(64 * 1024, output_file);
                 trace
-                    .bin_serialize(&mut output_file, args.compress_output)
+                    .bin_serialize(&mut output_file, true)
                     .expect("Failed to binary encode trace");
                 info!("Finished exporting: {}", path.display());
             });

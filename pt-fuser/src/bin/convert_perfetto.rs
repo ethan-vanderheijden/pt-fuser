@@ -16,13 +16,6 @@ struct Cli {
     input: String,
     #[clap(
         long,
-        short = 'i',
-        default_value_t = false,
-        help = "Whether the input trace file is compressed (zstd)"
-    )]
-    compressed_input: bool,
-    #[clap(
-        long,
         default_value_t = PauseRenderOption::Gap,
         help = "Whether to render pauses in the trace as gaps or block named '--pause--'"
     )]
@@ -36,8 +29,7 @@ fn main() {
     println!("Reading trace file...");
     let trace_data = File::open(cli.input).expect("Failed to read pt-fuser trace file");
     let mut trace_data = BufReader::with_capacity(64 * 1024, trace_data);
-    let trace = Trace::bin_deserialize(&mut trace_data, cli.compressed_input)
-        .expect("pt-fuser trace file is malformed");
+    let trace = Trace::bin_deserialize(&mut trace_data).expect("pt-fuser trace file is malformed");
 
     println!("Converting trace file... Ctrl-C to end conversion early.");
 

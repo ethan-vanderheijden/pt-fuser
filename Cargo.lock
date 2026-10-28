@@ -3012,6 +3012,7 @@ name = "pt-fuser"
 version = "0.4.2"
 dependencies = [
  "bincode-next",
+ "bitflags 2.13.2",
  "bloomfilter",
  "clap",
  "ctrlc",
