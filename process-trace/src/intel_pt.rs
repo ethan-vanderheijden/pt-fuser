@@ -114,6 +114,19 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
         })
     }
 
+    fn update_cur_metrics(&mut self, tsc: u64, insn_delta: u64) {
+        self.cur_metrics.insn_count += insn_delta;
+        if tsc >= self.cur_metrics.cycles {
+            self.cur_metrics.cycles = tsc;
+            self.cur_metrics.ts = self.tsc_conversion.convert(tsc);
+        } else {
+            warn!(
+                "TSC went backwards! From {} to {}",
+                self.cur_metrics.cycles, tsc
+            );
+        }
+    }
+
     fn process_call_event(
         &self,
         mut builder: TraceBuilder,
@@ -157,6 +170,42 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
         BuilderResult::Builder(builder)
     }
 
+    fn disable_tracing(&mut self, cur_metrics: Metrics) {
+        info!("Disabling tracing at time {}", cur_metrics);
+        if let Some(builder_state) = self.builder.take() {
+            match builder_state {
+                BuilderState::InProgress(builder) => {
+                    self.builder = Some(BuilderState::Paused(builder.pause(cur_metrics)));
+                }
+                BuilderState::Paused(builder) => {
+                    error!(
+                        "Received Disabled event while trace is already paused (as time {})!",
+                        cur_metrics
+                    );
+                    self.builder = Some(BuilderState::Paused(builder));
+                }
+            }
+        }
+    }
+
+    fn enable_tracing(&mut self, cur_metrics: Metrics) {
+        info!("Enabling tracing at time {}", cur_metrics);
+        if let Some(builder_state) = self.builder.take() {
+            match builder_state {
+                BuilderState::InProgress(builder) => {
+                    error!(
+                        "Received Enabled event while trace is already in progress (as time {})!",
+                        cur_metrics
+                    );
+                    self.builder = Some(BuilderState::InProgress(builder));
+                }
+                BuilderState::Paused(builder) => {
+                    self.builder = Some(BuilderState::InProgress(builder.resume(cur_metrics)));
+                }
+            }
+        }
+    }
+
     fn process_event(&mut self, event: libiptEvent) {
         let cur_metrics = if let Some(tsc) = event.tsc() {
             Metrics {
@@ -186,40 +235,9 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
 
         match event.event_type() {
             libiptEventType::AsnycDisabled(_) | libiptEventType::Disabled(_) => {
-                info!("Disabling tracing at time {}", cur_metrics);
-                if let Some(builder_state) = self.builder.take() {
-                    match builder_state {
-                        BuilderState::InProgress(builder) => {
-                            self.builder = Some(BuilderState::Paused(builder.pause(cur_metrics)));
-                        }
-                        BuilderState::Paused(builder) => {
-                            error!(
-                                "Received Disabled event while trace is already paused (as time {})!",
-                                cur_metrics
-                            );
-                            self.builder = Some(BuilderState::Paused(builder));
-                        }
-                    }
-                }
+                self.disable_tracing(cur_metrics)
             }
-            libiptEventType::Enabled(_) => {
-                info!("Enabling tracing at time {}", cur_metrics);
-                if let Some(builder_state) = self.builder.take() {
-                    match builder_state {
-                        BuilderState::InProgress(builder) => {
-                            error!(
-                                "Received Enabled event while trace is already in progress (as time {})!",
-                                cur_metrics
-                            );
-                            self.builder = Some(BuilderState::InProgress(builder));
-                        }
-                        BuilderState::Paused(builder) => {
-                            self.builder =
-                                Some(BuilderState::InProgress(builder.resume(cur_metrics)));
-                        }
-                    }
-                }
-            }
+            libiptEventType::Enabled(_) => self.enable_tracing(cur_metrics),
             _ => {}
         }
 
@@ -243,18 +261,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
         }
     }
 
-    fn process_block(&mut self, block: Block, tsc: u64) -> Option<Trace> {
-        if tsc >= self.cur_metrics.cycles {
-            self.cur_metrics.cycles = tsc;
-            self.cur_metrics.ts = self.tsc_conversion.convert(tsc);
-        } else {
-            warn!(
-                "TSC went backwards! From {} to {}",
-                self.cur_metrics.cycles, tsc
-            );
-        }
-        self.cur_metrics.insn_count += block.ninsn() as u64;
-
+    fn process_block(&mut self, block: Block) -> Option<Trace> {
         let block_sym = match self.image.borrow_mut().resolve_symbol(block.ip()) {
             Ok(s) => s,
             Err(_) => fallback_symbol(),
@@ -401,6 +408,14 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
                     self.branch_reason = Class::Unknown;
                     match self.decoder.resync() {
                         Ok(new_status) => {
+                            if let Ok((tsc, _, _)) = self.decoder.time() {
+                                self.update_cur_metrics(tsc, 0);
+                            }
+                            // resync() returns ip_suppressed to indicate it resync-ed in an
+                            // area where tracing was disabled
+                            if new_status.ip_supressed() {
+                                self.disable_tracing(self.cur_metrics);
+                            }
                             self.update_state(new_status);
                         }
                         Err(err) => match err.code() {
@@ -422,6 +437,10 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
                 }
                 DecoderState::SyncForward => {
                     self.branch_reason = Class::Unknown;
+                    if self.builder.is_some() {
+                        error!("Discarding trace as we sync to the next PSB!");
+                        self.builder = None;
+                    }
                     // only fails if a bad packet is encountered, which is unrecoverable
                     let status = self.decoder.sync_forward()?;
                     self.update_state(status);
@@ -457,21 +476,29 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
                         Ok((block, status)) => {
                             self.update_state(status);
                             let (tsc, _, _) = self.decoder.time()?;
-                            if let Some(finished_trace) = self.process_block(block, tsc) {
+                            self.update_cur_metrics(tsc, block.ninsn() as u64);
+                            if let Some(finished_trace) = self.process_block(block) {
                                 return Ok(Some(finished_trace));
                             }
                         }
                         Err(err) => {
-                            warn!("Block error! err: {:?}", err);
                             match err.code() {
                                 PtErrorCode::BadContext
                                 | PtErrorCode::BadOpc
                                 | PtErrorCode::BadPacket => {
+                                    error!(
+                                        "Unrecoverable decoder error, trace data is likely corrupted! {:?}",
+                                        err
+                                    );
                                     // these indicate the data stream is corrupted
                                     self.decoder_state = DecoderState::Finished;
                                     return Err(err);
                                 }
-                                PtErrorCode::Nosync => {
+                                PtErrorCode::Nosync | PtErrorCode::RetstackEmpty => {
+                                    error!(
+                                        "Recoverable decoder error, but must sync to PSB! {:?}",
+                                        err
+                                    );
                                     self.decoder_state = DecoderState::SyncForward;
                                 }
                                 PtErrorCode::Eos => {
@@ -482,6 +509,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
                                 | PtErrorCode::BadImage
                                 | PtErrorCode::BadRetcomp
                                 | PtErrorCode::BadQuery => {
+                                    warn!("Recoverable decoder error! {:?}", err);
                                     // these errors likely indicate that the memory image is outdated or incomplete
                                     // trace data should be recoverable, so we can just resync at the next known IP
                                     self.decoder_state = DecoderState::Resync;
