@@ -868,7 +868,7 @@ dependencies = [
 
 [[package]]
 name = "convert-trace"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "blazesym",
  "clap",
@@ -3008,7 +3008,7 @@ dependencies = [
 
 [[package]]
 name = "pt-fuser"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "bincode-next",
  "bitflags 2.13.2",
