@@ -26,7 +26,7 @@ cargo build --release
 
 This project consists of three crates:
 
-- `transform-trace`: produces a shared object file that transforms the trace from `perf`'s format to `pt-fuser`'s internal format via `perf script`'s dlfilter feature.
+- `process-trace`: produces a shared object file that transforms the trace from `perf`'s format to `pt-fuser`'s internal format via `perf script`'s dlfilter feature.
 - `pt-fuser`: the main crate that provides the core functionality of merging, comparing, and exporting traces.
 - `perfetto-rust`: contains protobuf code for creating Perfetto trace files. It was generated from Perfetto's protobuf definitions.
 

@@ -36,13 +36,17 @@ pub trait ImageProvider {
 }
 
 /// Creates a symbol for a frame whose symbol information isn't known.
-/// Unknown frames can be recognized by checking .offset == 0
+/// Unknown frames can be recognized with `is_unknown`.
 fn fallback_symbol() -> SymbolInfo {
     SymbolInfo {
         name: "[unknown]".to_string(),
         vaddr_start: 0,
         size: 0,
     }
+}
+
+fn is_unknown(symbol: &SymbolInfo) -> bool {
+    symbol.vaddr_start == 0
 }
 
 /// Returns how many frames up the callstack the address is contained in, or None if it's not contained in any frame.
@@ -87,30 +91,26 @@ struct Transformer<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> {
 }
 
 impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, 'b, 'c, I, F> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         decoder: BlockDecoder<'a, 'c>,
         buffer: &'b [u8],
         image: Rc<RefCell<I>>,
         tsc_conversion: TscConversion,
-        target_symbol: Regex,
-        frame_completion_options: FrameCompletionOptions,
-        traces_left: Option<usize>,
-        progress_tracker: Option<ProgressTracker<F>>,
+        opts: ConversionOpts<F>,
     ) -> Result<Self, PtError> {
         Ok(Self {
             decoder,
             _buffer: buffer,
             image,
             tsc_conversion,
-            target_symbol,
-            frame_completion_options,
-            traces_left,
+            target_symbol: opts.target_symbol,
+            frame_completion_options: opts.frame_completion_options,
+            traces_left: opts.max_traces,
             cur_metrics: Metrics::constant(0),
             builder: None,
             branch_reason: Class::Unknown,
             decoder_state: DecoderState::SyncForward,
-            progress_tracker,
+            progress_tracker: opts.progress_info,
         })
     }
 
@@ -317,8 +317,8 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
 
             let current_sym = builder.get_frame_symbol(0);
 
-            let builder_result = if current_sym.vaddr_start == 0 {
-                if block_sym.vaddr_start != 0 {
+            let builder_result = if is_unknown(current_sym) {
+                if !is_unknown(&block_sym) {
                     if let Some(levels) = contained_in_callstack(&builder, block.ip()) {
                         self.process_return_event(builder, levels)
                     } else {
@@ -341,12 +341,11 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
                     },
                 );
 
-                if branch_reason == Class::Call || returning_levels.is_none() {
-                    self.process_call_event(builder, block_sym)
-                } else if let Some(levels) = returning_levels {
-                    self.process_return_event(builder, levels)
-                } else {
-                    BuilderResult::Builder(builder)
+                match returning_levels {
+                    Some(levels) if branch_reason != Class::Call => {
+                        self.process_return_event(builder, levels)
+                    }
+                    _ => self.process_call_event(builder, block_sym),
                 }
             } else if branch_reason == Class::Call {
                 // function was probably called recursively
@@ -364,7 +363,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
                     return Some(trace);
                 }
             }
-        } else if block_sym.vaddr_start != 0 && self.target_symbol.is_match(&block_sym.name) {
+        } else if !is_unknown(&block_sym) && self.target_symbol.is_match(&block_sym.name) {
             info!("Starting trace: symbol={}", block_sym.name);
             let mut new_builder = TraceBuilder::new(self.cur_metrics, block_sym);
             new_builder.new_event(
@@ -463,6 +462,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
                         Err(err) => {
                             if matches!(err.code(), PtErrorCode::BadQuery) {
                                 // shouldn't happen since we know an event is pending
+                                self.decoder_state = DecoderState::ReadBlock;
                             } else {
                                 // other errors shouldn't be possible unless something
                                 // very wrong happened
@@ -605,6 +605,13 @@ impl<F: Fn(usize) -> String> ProgressTracker<F> {
     }
 }
 
+pub struct ConversionOpts<F: Fn(usize) -> String> {
+    pub target_symbol: Regex,
+    pub frame_completion_options: FrameCompletionOptions,
+    pub max_traces: Option<usize>,
+    pub progress_info: Option<ProgressTracker<F>>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TraceMetadata {
     pub cpu_info: Cpu,
@@ -612,16 +619,12 @@ pub struct TraceMetadata {
     pub tsc_info: TscConversion,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn convert<'a, 'b: 'a, 'c, I: ImageProvider + 'a + 'c, F: 'a + Fn(usize) -> String>(
     data: &'a mut [u8],
     decoder_image: &'b mut Image<'c>,
     image_provider: I,
     metadata: &TraceMetadata,
-    target_symbol: &Regex,
-    frame_completion_options: FrameCompletionOptions,
-    max_traces: Option<usize>,
-    mut progress_tracker: Option<ProgressTracker<F>>,
+    mut opts: ConversionOpts<F>,
 ) -> Result<impl FallibleIterator<Item = Trace, Error = PtError> + 'a, PtError> {
     let builder = EncoderDecoderBuilder::<BlockDecoder>::new()
         .cpu(metadata.cpu_info)
@@ -654,18 +657,9 @@ pub fn convert<'a, 'b: 'a, 'c, I: ImageProvider + 'a + 'c, F: 'a + Fn(usize) -> 
     ));
     decoder.set_image(Some(decoder_image))?;
 
-    if let Some(progress_tracker) = &mut progress_tracker {
+    if let Some(progress_tracker) = &mut opts.progress_info {
         progress_tracker.bar.set_length(data.len() as u64);
     }
 
-    Transformer::new(
-        decoder,
-        data,
-        image_provider_cell,
-        metadata.tsc_info,
-        target_symbol.to_owned(),
-        frame_completion_options,
-        max_traces,
-        progress_tracker,
-    )
+    Transformer::new(decoder, data, image_provider_cell, metadata.tsc_info, opts)
 }

@@ -6,7 +6,7 @@ use crate::trace::{
     self, Event, Frame, Metrics, MetricsRange, SymbolInfo, Trace, frame::StoredChunk,
 };
 
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FrameCompletionOptions {
     // sometimes, calling a function first goes to the Procedure Linkage Table (PLT) stub, which
     // immediately jumps to the target function. We can remove the PLT stub frame from the trace.

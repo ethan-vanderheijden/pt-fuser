@@ -93,6 +93,19 @@ impl IncompleteAuxtrace {
     }
 }
 
+fn parse_cpu_field<T: std::str::FromStr>(
+    field: &str,
+    name: &str,
+    cpu_string: &str,
+) -> Result<T, Error> {
+    field.parse::<T>().map_err(|_| {
+        Error::BadCpuID(format!(
+            "Failed to parse CPU {} from CPU ID string: \"{}\"",
+            name, cpu_string
+        ))
+    })
+}
+
 fn extract_cpu_info(cpu_string: &str) -> Result<Cpu, Error> {
     let parts = cpu_string.split(',').collect::<Vec<&str>>();
     if parts.len() != 4 {
@@ -101,30 +114,15 @@ fn extract_cpu_info(cpu_string: &str) -> Result<Cpu, Error> {
             cpu_string
         )))
     } else {
-        let vendor = parts[0].to_string();
-        let Ok(family) = parts[1].parse::<u16>() else {
-            return Err(Error::BadCpuID(format!(
-                "Failed to parse u16 CPU family from CPU ID string: \"{}\"",
-                cpu_string
-            )));
-        };
-        let Ok(model) = parts[2].parse::<u8>() else {
-            return Err(Error::BadCpuID(format!(
-                "Failed to parse u8 CPU model from CPU ID string: \"{}\"",
-                cpu_string
-            )));
-        };
-        let Ok(stepping) = parts[3].parse::<u8>() else {
-            return Err(Error::BadCpuID(format!(
-                "Failed to parse u8 CPU stepping from CPU ID string: \"{}\"",
-                cpu_string
-            )));
-        };
-        if vendor != "GenuineIntel" {
-            Ok(Cpu::new(CpuVendor::UNKNOWN, family, model, stepping))
+        let family = parse_cpu_field::<u16>(parts[1], "family", cpu_string)?;
+        let model = parse_cpu_field::<u8>(parts[2], "model", cpu_string)?;
+        let stepping = parse_cpu_field::<u8>(parts[3], "stepping", cpu_string)?;
+        let vendor = if parts[0] == "GenuineIntel" {
+            CpuVendor::INTEL
         } else {
-            Ok(Cpu::new(CpuVendor::INTEL, family, model, stepping))
-        }
+            CpuVendor::UNKNOWN
+        };
+        Ok(Cpu::new(vendor, family, model, stepping))
     }
 }
 

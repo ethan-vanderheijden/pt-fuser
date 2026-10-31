@@ -1,7 +1,7 @@
-mod demangle;
 mod elf_image;
 mod intel_pt;
 mod perf_data;
+mod symbol_cache;
 
 use std::{
     fs::{self, File},
@@ -16,12 +16,14 @@ use libipt::image::Image;
 use pt_fuser::trace::{Trace, builder::FrameCompletionOptions};
 use regex::Regex;
 use threadpool::ThreadPool;
-use tracing::{Level, info};
+use tracing::{Level, error, info};
 
-use crate::intel_pt::ProgressTracker;
+use crate::intel_pt::{ConversionOpts, ProgressTracker};
 
 #[derive(Parser)]
-#[command(about = "Converts a trace from pt-fuser representation to a Perfetto trace")]
+#[command(
+    about = "Converts a trace from the perf.data format to pt-fuser's internal representation"
+)]
 #[command(
     display_name = concat!("pt-fuser ", env!("CARGO_BIN_NAME")),
     version = pt_fuser::VERSION,
@@ -86,6 +88,12 @@ fn main() {
         Some(args.max_traces)
     };
 
+    // look for vmlinux up front so any error is reported early
+    match elf_image::find_vmlinux() {
+        Ok(_) => {}
+        Err(reason) => error!(reason),
+    }
+
     let (metadata, raw_data_vec) =
         perf_data::parse_perf_data(&args.perf_file).expect("Failed to parse perf.data");
     for mut raw_data in raw_data_vec {
@@ -96,20 +104,26 @@ fn main() {
                 format!("Thread {} - produced {} traces", raw_data.tid, num_traces)
             }))
         };
+
         let mut decoder_image =
             Image::new(None).expect("Failed to allocate an image for the decoder");
+
+        let options = ConversionOpts {
+            target_symbol: sym_regex.clone(),
+            frame_completion_options: trace_options,
+            max_traces: trace_limit,
+            progress_info: progress_tracker,
+        };
         let mut trace_iter = intel_pt::convert(
             &mut raw_data.data,
             &mut decoder_image,
             raw_data.image,
             &metadata,
-            &sym_regex,
-            trace_options,
-            trace_limit,
-            progress_tracker,
+            options,
         )
         .expect("Failed to create Intel PT trace decoder")
         .enumerate();
+
         while let Some((i, trace)) = trace_iter
             .next()
             .expect("Unrecoverable error while decoding trace")
@@ -135,4 +149,9 @@ fn main() {
     }
 
     threadpool.join();
+    // a panicking export job only kills its worker, so surface it in the exit code
+    if threadpool.panic_count() > 0 {
+        eprintln!("Failed to export {} trace(s)", threadpool.panic_count());
+        std::process::exit(1);
+    }
 }
