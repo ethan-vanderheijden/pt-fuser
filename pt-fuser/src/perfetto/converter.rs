@@ -67,7 +67,7 @@ fn create_track(
         optional_trusted_packet_sequence_id: Some(
             OptionalTrustedPacketSequenceId::TrustedPacketSequenceId(sequence_id),
         ),
-        sequence_flags: Some(SequenceFlags::SeqNeedsIncrementalState as u32),
+        sequence_flags: Some(SequenceFlags::SeqIncrementalStateCleared as u32),
         previous_packet_dropped: Some(true),
         first_packet_on_sequence: Some(true),
         timestamp: Some(timestamp),

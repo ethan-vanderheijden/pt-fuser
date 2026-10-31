@@ -170,17 +170,18 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
         BuilderResult::Builder(builder)
     }
 
-    fn disable_tracing(&mut self, cur_metrics: Metrics) {
-        info!("Disabling tracing at time {}", cur_metrics);
+    fn disable_tracing(&mut self, when: Metrics) {
+        info!("Disabling tracing at time {}", when);
+        self.cur_metrics = when;
         if let Some(builder_state) = self.builder.take() {
             match builder_state {
                 BuilderState::InProgress(builder) => {
-                    self.builder = Some(BuilderState::Paused(builder.pause(cur_metrics)));
+                    self.builder = Some(BuilderState::Paused(builder.pause(when)));
                 }
                 BuilderState::Paused(builder) => {
                     error!(
                         "Received Disabled event while trace is already paused (as time {})!",
-                        cur_metrics
+                        when
                     );
                     self.builder = Some(BuilderState::Paused(builder));
                 }
@@ -188,19 +189,20 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
         }
     }
 
-    fn enable_tracing(&mut self, cur_metrics: Metrics) {
-        info!("Enabling tracing at time {}", cur_metrics);
+    fn enable_tracing(&mut self, when: Metrics) {
+        info!("Enabling tracing at time {}", when);
+        self.cur_metrics = when;
         if let Some(builder_state) = self.builder.take() {
             match builder_state {
                 BuilderState::InProgress(builder) => {
                     error!(
                         "Received Enabled event while trace is already in progress (as time {})!",
-                        cur_metrics
+                        when
                     );
                     self.builder = Some(BuilderState::InProgress(builder));
                 }
                 BuilderState::Paused(builder) => {
-                    self.builder = Some(BuilderState::InProgress(builder.resume(cur_metrics)));
+                    self.builder = Some(BuilderState::InProgress(builder.resume(when)));
                 }
             }
         }
@@ -271,7 +273,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
         self.branch_reason = block.class();
 
         info!("{:?} into {}", branch_reason, block_sym);
-        info!("at time {}", self.cur_metrics);
+        info!("at time {} with ip {}", self.cur_metrics, block.ip());
 
         // How we handle [unknown] frames
         // ------------------------------

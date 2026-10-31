@@ -1,23 +1,80 @@
-use std::{fmt::Display, fs::File};
+use std::{fmt::Display, fs::File, path::Path, sync::OnceLock};
 
 use blazesym::symbolize::{
     Input, Symbolized, Symbolizer,
     source::{self, Source},
 };
 use goblin::elf::Elf;
+use linux_perf_data::DsoKey;
 use memmap2::Mmap;
 use pt_fuser::trace::SymbolInfo;
-use tracing::warn;
+use tracing::{error, info, warn};
 
-use crate::{demangle::DemangleCache, elf_image::Error::ElfParse, intel_pt::ImageProvider};
+use crate::{demangle::DemangleCache, intel_pt::ImageProvider};
 
 // for now, only support x86_64 PLT stubs since only x86_64 has Intel PT
 const X86_64_PLT0_SIZE: u64 = 0x10;
 const X86_64_PLT_STUB_SIZE: u64 = 0x10;
 
+static VMLINUX_PATH: OnceLock<Option<String>> = OnceLock::new();
+
+pub fn find_vmlinux() -> Option<&'static str> {
+    let s = VMLINUX_PATH.get_or_init(|| {
+        let uname = match uname::uname() {
+            Ok(res) => res,
+            Err(e) => {
+                error!("Failed to get 'uname' information: {}", e);
+                return None;
+            }
+        };
+
+        let mut resolutions = vec![
+            (format!("/boot/vmlinux-{}", uname.release), String::new()),
+            (
+                format!("/usr/lib/debug/boot/vmlinux-{}", uname.release),
+                String::new(),
+            ),
+            (
+                format!("/lib/modules/{}/build/vmlinux", uname.release),
+                String::new(),
+            ),
+            (
+                format!("/usr/lib/debug/lib/modules/{}/vmlinux", uname.release),
+                String::new(),
+            ),
+            (
+                format!("/usr/lib/debug/boot/vmlinux-{}.debug", uname.release),
+                String::new(),
+            ),
+        ];
+        for (path_str, error_reason) in &mut resolutions {
+            let path = Path::new(path_str);
+            if path.exists() {
+                if File::open(path).is_ok() {
+                    return Some(path_str.clone());
+                } else {
+                    *error_reason = "cannot be opened for reading".to_string();
+                }
+            } else {
+                *error_reason = "does not exist".to_string();
+            }
+        }
+
+        let mut msg = String::new();
+        msg.push_str("Could not find vmlinux in any of the following paths:");
+        for (path, reason) in resolutions {
+            msg.push_str(&format!("\n  {} - {}", path, reason));
+        }
+        error!("{}", msg);
+
+        None
+    });
+    s.as_ref().map(|s| s.as_str())
+}
+
 #[derive(Debug)]
 pub enum Error {
-    Io(std::io::Error),
+    Io(String, std::io::Error),
     BadMapping(String),
     ElfParse(goblin::error::Error),
     MappingRead(String),
@@ -28,7 +85,7 @@ pub enum Error {
 impl Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Io(e) => write!(f, "I/O error: {}", e),
+            Error::Io(path, e) => write!(f, "{} - {}", path, e),
             Error::BadMapping(msg) => write!(f, "Bad mapping: {}", msg),
             Error::ElfParse(e) => write!(f, "ELF parse error: {}", e),
             Error::MappingRead(msg) => write!(f, "Mapping read error: {}", msg),
@@ -48,8 +105,7 @@ struct PltLookup {
 }
 
 impl PltLookup {
-    fn new(elf_data: &[u8]) -> Result<Self, Error> {
-        let elf = Elf::parse(elf_data).map_err(ElfParse)?;
+    fn new(elf: &Elf) -> Result<Self, Error> {
         if !elf.is_64 {
             return Err(Error::MappingRead(
                 "Currently, we only support resolving PLT stub names for x86_64 architecture"
@@ -109,6 +165,7 @@ struct ElfInfo {
     // some ELFs (e.g., shared libraries) won't have PLT stubs
     plt_lookup: Option<PltLookup>,
     symbolizer: Symbolizer,
+    symbolizer_source: Source<'static>,
     demangle_cache: DemangleCache,
 }
 
@@ -117,12 +174,12 @@ struct Mapping {
     vaddr: u64,
     file_offset: u64,
     size: usize,
-    path: String,
+    path: DsoKey,
     elf: Option<ElfInfo>,
 }
 
 impl Mapping {
-    fn new(vaddr: u64, file_offset: u64, size: usize, path: String) -> Self {
+    fn new(vaddr: u64, file_offset: u64, size: usize, path: DsoKey) -> Self {
         Mapping {
             vaddr,
             file_offset,
@@ -143,50 +200,83 @@ impl Mapping {
     /// Reads the ELF and prepares the ElfInfo by reading a byte section of the ELF
     /// into a buffer and preparing the PltLookup.
     fn prepare_elf(&mut self) -> Result<(), Error> {
-        if self.path.starts_with("[") && self.path.ends_with("]") {
-            return Err(Error::MappingRead(format!(
-                "Cannot read from special mapping {} (vaddr: 0x{:x}, size: {})",
-                self.path, self.vaddr, self.size
-            )));
+        let filesystem_path = match &self.path {
+            DsoKey::User {
+                file_name,
+                full_path,
+            } => str::from_utf8(full_path).map_err(|e| {
+                Error::MappingRead(format!(
+                    "Failed to read full path of mapping {} as UTF-8: {}",
+                    file_name, e
+                ))
+            }),
+            DsoKey::Kernel => find_vmlinux().ok_or(Error::MappingRead(
+                "Could not find vmlinux for kernel mapping".to_string(),
+            )),
+            _ => Err(Error::MappingRead(format!(
+                "Unsupported file mapping type: {:?}",
+                self.path
+            ))),
+        }?;
+
+        let file =
+            File::open(filesystem_path).map_err(|e| Error::Io(filesystem_path.to_string(), e))?;
+        let mmap =
+            unsafe { Mmap::map(&file).map_err(|e| Error::Io(filesystem_path.to_string(), e))? };
+        let elf = Elf::parse(&mmap).map_err(Error::ElfParse)?;
+
+        let mut read_offset = self.file_offset as usize;
+        if read_offset + self.size > mmap.len()
+            && matches!(self.path, DsoKey::Kernel)
+            && let Some(text_section) = elf
+                .section_headers
+                .iter()
+                .find(|sh| elf.shdr_strtab.get_at(sh.sh_name) == Some(".text"))
+        {
+            // for some reason, the PERF_RECORD_MMAP2 file offset for kernel mappings
+            // is set to the virtual address offset, which is wildly off
+            // it seems to work if we assume the actual file offset is the .text section
+            read_offset = text_section.sh_offset as usize;
+            self.file_offset = read_offset as u64;
         }
 
-        let file = File::open(&self.path).map_err(Error::Io)?;
-        let mmap = unsafe { Mmap::map(&file).map_err(Error::Io)? };
-
-        let read_offset = self.file_offset as usize;
         if read_offset + self.size > mmap.len() {
             return Err(Error::MappingRead(format!(
-                "For ELF {}, requested {} bytes from offset {} but file size is {} bytes",
-                self.path,
-                self.size,
+                "When preparing ELF {}, requested bytes 0x{:x} - 0x{:x} but file size is only 0x{:x}",
+                filesystem_path,
                 read_offset,
+                read_offset + self.size,
                 mmap.len()
             )));
         }
-
         let cached_binary = mmap[read_offset..read_offset + self.size].to_vec();
+
         let symbolizer = Symbolizer::builder()
             .enable_auto_reload(false)
             .enable_code_info(false)
             .enable_inlined_fns(false)
             .build();
-        self.elf = match PltLookup::new(&mmap) {
-            Ok(plt_lookup) => Some(ElfInfo {
-                cached_binary,
-                plt_lookup: Some(plt_lookup),
-                symbolizer,
-                demangle_cache: DemangleCache::new(),
-            }),
+        let symbolizer_source = Source::Elf(source::Elf::new(filesystem_path));
+
+        let plt_lookup = match PltLookup::new(&elf) {
+            Ok(lookup) => Some(lookup),
             Err(e) => {
-                warn!("ELF file {} can't parse the PLT stubs: {}", self.path, e);
-                Some(ElfInfo {
-                    cached_binary,
-                    plt_lookup: None,
-                    symbolizer,
-                    demangle_cache: DemangleCache::new(),
-                })
+                warn!(
+                    "ELF file {} can't parse the PLT stubs: {}",
+                    filesystem_path, e
+                );
+                None
             }
         };
+
+        self.elf = Some(ElfInfo {
+            cached_binary,
+            plt_lookup,
+            symbolizer,
+            symbolizer_source,
+            demangle_cache: DemangleCache::new(),
+        });
+
         Ok(())
     }
 
@@ -194,11 +284,12 @@ impl Mapping {
         let buffer_offset = (vaddr - self.vaddr) as usize;
         if buffer_offset >= self.size {
             return Err(Error::MappingRead(format!(
-                "For ELF {}, requested {} bytes from offset {} but mapped size is {} bytes",
+                "For ELF {:?}, requested {} bytes from offset 0x{:x} but mapping is only 0x{:x}-0x{:x}",
                 self.path,
                 buffer.len(),
                 buffer_offset,
-                self.size
+                self.vaddr,
+                self.vaddr_end()
             )));
         }
 
@@ -235,10 +326,9 @@ impl Mapping {
                 size: X86_64_PLT_STUB_SIZE,
             })
         } else {
-            let source = Source::Elf(source::Elf::new(&self.path));
             let resolved = elf
                 .symbolizer
-                .symbolize_single(&source, Input::FileOffset(file_offset))
+                .symbolize_single(&elf.symbolizer_source, Input::FileOffset(file_offset))
                 .map_err(Error::SymbolLookup)?;
 
             match resolved {
@@ -266,6 +356,8 @@ pub struct ElfImage {
 
 impl ElfImage {
     pub fn new() -> Self {
+        // try to find vmlinux as early as possible so any error is reported early
+        let _ = find_vmlinux();
         ElfImage {
             mappings: Vec::new(),
         }
@@ -276,8 +368,15 @@ impl ElfImage {
         vaddr: u64,
         file_offset: u64,
         size: usize,
-        path: String,
+        path: DsoKey,
     ) -> Result<(), Error> {
+        info!(
+            "Adding mapping: vaddr=0x{:x} to 0x{:x}, file_offset=0x{:x}, path={:?}",
+            vaddr,
+            vaddr + size as u64,
+            file_offset,
+            path
+        );
         let new_mapping = Mapping::new(vaddr, file_offset, size, path);
         for mapping in &self.mappings {
             if mapping.overlaps(&new_mapping) {
