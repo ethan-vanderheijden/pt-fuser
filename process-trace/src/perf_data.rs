@@ -1,8 +1,7 @@
 use std::{collections::HashMap, fmt::Display, fs::File, io::BufReader};
 
 use linux_perf_data::{
-    AuxtraceInfo, DsoKey, PerfFileReader, PerfFileRecord, UserRecord,
-    linux_perf_event_reader::{EventRecord, PerfEventType},
+    AuxtraceInfo, DsoKey, PerfFileReader, PerfFileRecord, UserRecord, linux_perf_event_reader::{EventRecord, Mmap2FileId, PerfEventType},
 };
 
 use crate::{
@@ -242,12 +241,17 @@ pub fn parse_perf_data(file_path: &str) -> Result<(TraceMetadata, Vec<RawTrace>)
                             // pid=-1 means the mapping applied to all threads
                             &mut kernel_image
                         };
+                        let buildid = match mmap2.file_id {
+                            Mmap2FileId::InodeAndVersion(_) => None,
+                            Mmap2FileId::BuildId(id) => Some(id),
+                        };
                         target_image
                             .add_mapping(
                                 mmap2.address,
                                 mmap2.page_offset,
                                 mmap2.length as usize,
                                 dso_key,
+                                buildid,
                             )
                             .map_err(Error::ElfImage)?;
                     }

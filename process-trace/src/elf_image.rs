@@ -1,14 +1,14 @@
-use std::{fmt::Display, fs::File, ops::Range, sync::OnceLock};
+use std::{collections::HashMap, fmt::Display, fs::File, sync::OnceLock};
 
 use blazesym::symbolize::{
     Input, Symbolized, Symbolizer,
     source::{self, Source},
 };
-use goblin::elf::Elf;
+use goblin::elf::{Elf, note::NT_GNU_BUILD_ID};
 use linux_perf_data::DsoKey;
 use memmap2::Mmap;
 use pt_fuser::trace::SymbolInfo;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::{intel_pt::ImageProvider, symbol_cache::SymbolCache};
 
@@ -147,11 +147,13 @@ impl PltLookup {
     }
 }
 
+/// Everything we know about one binary on disk. It doesn't depend on any particular
+/// mapping, so it can be shared by every mapping of the same binary.
 #[derive(Debug)]
 struct ElfInfo {
     mmap: Mmap,
-    // the part of `mmap` that backs the mapping
-    code_range: Range<usize>,
+    // file offset of the .text section
+    text_offset: Option<u64>,
     // some ELFs (e.g., shared libraries) won't have PLT stubs
     plt_lookup: Option<PltLookup>,
     symbolizer: Symbolizer,
@@ -159,60 +161,21 @@ struct ElfInfo {
 }
 
 #[derive(Debug)]
-struct Mapping {
-    vaddr: u64,
-    file_offset: u64,
-    size: usize,
-    path: DsoKey,
-    elf: Option<ElfInfo>,
-    // set when prepare_elf failed, so we don't re-open and re-parse the file on every access
-    prepare_failed: bool,
+struct ElfCache {
+    // None means preparing the ELF failed, so we don't retry on every access
+    cache: HashMap<DsoKey, Option<ElfInfo>>,
 }
 
-impl Mapping {
-    fn new(vaddr: u64, file_offset: u64, size: usize, path: DsoKey) -> Self {
-        Mapping {
-            vaddr,
-            file_offset,
-            size,
-            path,
-            elf: None,
-            prepare_failed: false,
+impl ElfCache {
+    fn new() -> Self {
+        ElfCache {
+            cache: HashMap::new(),
         }
     }
 
-    /// Makes sure `self.elf` is populated, preparing it on first use.
-    fn ensure_elf(&mut self) -> Result<(), Error> {
-        if self.elf.is_some() {
-            return Ok(());
-        }
-        if self.prepare_failed {
-            return Err(Error::MappingRead(format!(
-                "ELF for mapping {:?} could not be prepared earlier",
-                self.path
-            )));
-        }
-        match self.prepare_elf() {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                self.prepare_failed = true;
-                Err(e)
-            }
-        }
-    }
-
-    fn vaddr_end(&self) -> u64 {
-        self.vaddr + self.size as u64
-    }
-
-    fn overlaps(&self, other: &Mapping) -> bool {
-        self.vaddr < other.vaddr_end() && other.vaddr < self.vaddr_end()
-    }
-
-    /// Reads the ELF and prepares the ElfInfo by mapping the ELF into memory
-    /// and preparing the PltLookup.
-    fn prepare_elf(&mut self) -> Result<(), Error> {
-        let filesystem_path = match &self.path {
+    /// Maps the ELF into memory, parses the .plt section, and checks the build id.
+    fn prepare_elf(key: &DsoKey, buildid: Option<&[u8]>) -> Result<ElfInfo, Error> {
+        let filesystem_path = match key {
             DsoKey::User {
                 file_name,
                 full_path,
@@ -227,7 +190,7 @@ impl Mapping {
             }),
             _ => Err(Error::MappingRead(format!(
                 "Unsupported file mapping type: {:?}",
-                self.path
+                key
             ))),
         }?;
 
@@ -237,31 +200,26 @@ impl Mapping {
             unsafe { Mmap::map(&file).map_err(|e| Error::Io(filesystem_path.to_string(), e))? };
         let elf = Elf::parse(&mmap).map_err(Error::ElfParse)?;
 
-        let mut read_offset = self.file_offset as usize;
-        if read_offset + self.size > mmap.len()
-            && matches!(self.path, DsoKey::Kernel)
-            && let Some(text_section) = elf
-                .section_headers
-                .iter()
-                .find(|sh| elf.shdr_strtab.get_at(sh.sh_name) == Some(".text"))
+        if let Some(buildid) = buildid
+            && let Some(actual_buildid) = elf.iter_note_headers(&mmap).and_then(|notes| {
+                notes
+                    .filter_map(Result::ok)
+                    .find(|note| note.n_type == NT_GNU_BUILD_ID && note.name == "GNU")
+                    .map(|note| note.desc)
+            })
+            && actual_buildid != buildid
         {
-            // for some reason, the PERF_RECORD_MMAP2 file offset for kernel mappings
-            // is set to the virtual address offset, which is wildly off
-            // it seems to work if we assume the actual file offset is the .text section
-            read_offset = text_section.sh_offset as usize;
-            self.file_offset = read_offset as u64;
-        }
-
-        if read_offset + self.size > mmap.len() {
             return Err(Error::MappingRead(format!(
-                "When preparing ELF {}, requested bytes 0x{:x} - 0x{:x} but file size is only 0x{:x}",
-                filesystem_path,
-                read_offset,
-                read_offset + self.size,
-                mmap.len()
+                "Build ID mismatch for ELF {}: expected {:x?}, found {:x?}",
+                filesystem_path, buildid, actual_buildid
             )));
         }
-        let code_range = read_offset..read_offset + self.size;
+
+        let text_offset = elf
+            .section_headers
+            .iter()
+            .find(|sh| elf.shdr_strtab.get_at(sh.sh_name) == Some(".text"))
+            .map(|sh| sh.sh_offset);
 
         let symbolizer = Symbolizer::builder()
             .enable_auto_reload(false)
@@ -281,18 +239,98 @@ impl Mapping {
             }
         };
 
-        self.elf = Some(ElfInfo {
+        // the parsed Elf borrows from mmap, so it must be dropped before mmap is moved
+        drop(elf);
+        Ok(ElfInfo {
             mmap,
-            code_range,
+            text_offset,
             plt_lookup,
             symbolizer,
             symbolizer_source,
-        });
-
-        Ok(())
+        })
     }
 
-    fn read(&mut self, buffer: &mut [u8], vaddr: u64) -> Result<usize, Error> {
+    /// Returns the ELF for the key, preparing it on first use.
+    /// Returns an error if this is the first time opening the ELF and it fails.
+    /// Returns None if opening the ELF previously failed.
+    fn open(&mut self, key: &DsoKey, buildid: Option<&[u8]>) -> Result<Option<&ElfInfo>, Error> {
+        if !self.cache.contains_key(key) {
+            match Self::prepare_elf(key, buildid) {
+                Ok(elf_info) => {
+                    self.cache.insert(key.clone(), Some(elf_info));
+                }
+                Err(e) => {
+                    error!("Failed to prepare ELF: {}", e);
+                    self.cache.insert(key.clone(), None);
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok(self.cache.get(key).and_then(Option::as_ref))
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Mapping {
+    vaddr: u64,
+    file_offset: u64,
+    size: usize,
+    path: DsoKey,
+    buildid: Option<Vec<u8>>,
+}
+
+impl Mapping {
+    fn new(
+        vaddr: u64,
+        file_offset: u64,
+        size: usize,
+        path: DsoKey,
+        buildid: Option<Vec<u8>>,
+    ) -> Self {
+        Mapping {
+            vaddr,
+            file_offset,
+            size,
+            path,
+            buildid,
+        }
+    }
+
+    fn vaddr_end(&self) -> u64 {
+        self.vaddr + self.size as u64
+    }
+
+    fn overlaps(&self, other: &Mapping) -> bool {
+        self.vaddr < other.vaddr_end() && other.vaddr < self.vaddr_end()
+    }
+
+    fn open_elf<'a>(&self, elf_cache: &'a mut ElfCache) -> Result<&'a ElfInfo, Error> {
+        elf_cache
+            .open(&self.path, self.buildid.as_deref())?
+            .ok_or_else(|| Error::MappingRead(format!("Failed to prepare ELF for {:?}", self.path)))
+    }
+
+    fn fix_file_offset(&self, elf: &ElfInfo) -> u64 {
+        match (&self.path, elf.text_offset) {
+            (DsoKey::Kernel, Some(text_offset))
+                if self.file_offset + self.size as u64 > elf.mmap.len() as u64 =>
+            {
+                // for some reason, the PERF_RECORD_MMAP2 file offset for kernel mappings
+                // is set to the virtual address offset, which is wildly off
+                // it seems to work if we assume the actual file offset is the .text section
+                text_offset
+            }
+            _ => self.file_offset,
+        }
+    }
+
+    fn read(
+        &self,
+        elf_cache: &mut ElfCache,
+        buffer: &mut [u8],
+        vaddr: u64,
+    ) -> Result<usize, Error> {
         let buffer_offset = (vaddr - self.vaddr) as usize;
         if buffer_offset >= self.size {
             return Err(Error::MappingRead(format!(
@@ -305,20 +343,29 @@ impl Mapping {
             )));
         }
 
-        self.ensure_elf()?;
-        let elf = self.elf.as_ref().unwrap();
+        let elf = self.open_elf(elf_cache)?;
+
+        let file_offset = self.fix_file_offset(elf) as usize;
+        let Some(mapped_section) = elf.mmap.get(file_offset..file_offset + self.size) else {
+            return Err(Error::MappingRead(format!(
+                "For ELF {:?}, requested bytes 0x{:x} - 0x{:x} but file size is only 0x{:x}",
+                self.path,
+                file_offset,
+                file_offset + self.size,
+                elf.mmap.len()
+            )));
+        };
+
         // a read may run past the end of the mapping, in which case it is truncated
         let len = buffer.len().min(self.size - buffer_offset);
-        let code = &elf.mmap[elf.code_range.clone()];
-        buffer[..len].copy_from_slice(&code[buffer_offset..buffer_offset + len]);
+        buffer[..len].copy_from_slice(&mapped_section[buffer_offset..buffer_offset + len]);
         Ok(len)
     }
 
-    fn resolve_symbol(&mut self, vaddr: u64) -> Result<SymbolInfo, Error> {
-        self.ensure_elf()?;
-        // must come after ensure_elf, which may adjust self.file_offset
-        let file_offset = self.file_offset + (vaddr - self.vaddr);
-        let elf = self.elf.as_mut().unwrap();
+    fn resolve_symbol(&self, elf_cache: &mut ElfCache, vaddr: u64) -> Result<SymbolInfo, Error> {
+        let elf = self.open_elf(elf_cache)?;
+
+        let file_offset = self.fix_file_offset(elf) + (vaddr - self.vaddr);
         if let Some(lookup) = &elf.plt_lookup
             && let Some(plt_sym) = lookup.lookup(file_offset)
         {
@@ -355,9 +402,26 @@ impl Mapping {
     }
 }
 
+/// Finds the mapping containing `vaddr`. `mappings` must be sorted by address.
+fn find_mapping(mappings: &[Mapping], vaddr: u64) -> Option<&Mapping> {
+    mappings
+        .binary_search_by(|m| {
+            if m.vaddr > vaddr {
+                std::cmp::Ordering::Greater
+            } else if m.vaddr_end() <= vaddr {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .ok()
+        .map(|idx| &mappings[idx])
+}
+
 #[derive(Debug)]
 pub struct ElfImage {
     symbol_cache: SymbolCache,
+    elf_cache: ElfCache,
     mappings: Vec<Mapping>,
 }
 
@@ -365,6 +429,8 @@ impl ElfImage {
     pub fn new() -> Self {
         ElfImage {
             symbol_cache: SymbolCache::new(),
+            // TODO: ElfCache can actually be shared across ElfImage instances
+            elf_cache: ElfCache::new(),
             mappings: Vec::new(),
         }
     }
@@ -375,6 +441,7 @@ impl ElfImage {
         file_offset: u64,
         size: usize,
         path: DsoKey,
+        buildid: Option<Vec<u8>>,
     ) -> Result<(), Error> {
         info!(
             "Adding mapping: vaddr=0x{:x} to 0x{:x}, file_offset=0x{:x}, path={:?}",
@@ -383,7 +450,7 @@ impl ElfImage {
             file_offset,
             path
         );
-        let new_mapping = Mapping::new(vaddr, file_offset, size, path);
+        let new_mapping = Mapping::new(vaddr, file_offset, size, path, buildid);
         for mapping in &self.mappings {
             if mapping.overlaps(&new_mapping) {
                 return Err(Error::BadMapping(format!(
@@ -407,23 +474,9 @@ impl ElfImage {
                 mapping.file_offset,
                 mapping.size,
                 mapping.path.clone(),
+                mapping.buildid.clone(),
             );
         }
-    }
-
-    fn lookup_mapping(&mut self, vaddr: u64) -> Option<&mut Mapping> {
-        self.mappings
-            .binary_search_by(|m| {
-                if m.vaddr > vaddr {
-                    std::cmp::Ordering::Greater
-                } else if m.vaddr_end() <= vaddr {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            })
-            .ok()
-            .map(|idx| &mut self.mappings[idx])
     }
 }
 
@@ -434,9 +487,12 @@ impl ImageProvider for ElfImage {
     fn read_chunk(&mut self, buffer: &mut [u8], mut vaddr: u64) -> Result<usize, Self::ReadError> {
         let mut read = 0;
         while read < buffer.len()
-            && let Some(mapping) = self.lookup_mapping(vaddr)
+            && let Some(mapping) = find_mapping(&self.mappings, vaddr)
         {
-            let bytes = mapping.read(&mut buffer[read..], vaddr)?;
+            let bytes = mapping.read(&mut self.elf_cache, &mut buffer[read..], vaddr)?;
+            if bytes == 0 {
+                break;
+            }
             read += bytes;
             vaddr += bytes as u64;
         }
@@ -456,8 +512,8 @@ impl ImageProvider for ElfImage {
             return Ok(symbol_info.clone());
         }
 
-        if let Some(mapping) = self.lookup_mapping(vaddr) {
-            let new_sym = mapping.resolve_symbol(vaddr)?;
+        if let Some(mapping) = find_mapping(&self.mappings, vaddr) {
+            let new_sym = mapping.resolve_symbol(&mut self.elf_cache, vaddr)?;
             self.symbol_cache.insert(new_sym.clone());
             Ok(new_sym)
         } else {
