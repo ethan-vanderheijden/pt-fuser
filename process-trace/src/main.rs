@@ -1,12 +1,15 @@
 mod elf_image;
 mod intel_pt;
 mod perf_data;
+mod progress;
 mod symbol_cache;
 
 use std::{
+    cell::RefCell,
     fs::{self, File},
     io::BufWriter,
     path::Path,
+    rc::Rc,
     thread,
 };
 
@@ -18,7 +21,7 @@ use regex::Regex;
 use threadpool::ThreadPool;
 use tracing::{Level, error, info};
 
-use crate::intel_pt::{ConversionOpts, ProgressTracker};
+use crate::{intel_pt::ConversionOpts, progress::ProgressTracker};
 
 #[derive(Parser)]
 #[command(
@@ -97,12 +100,14 @@ fn main() {
     let (metadata, raw_data_vec) =
         perf_data::parse_perf_data(&args.perf_file).expect("Failed to parse perf.data");
     for mut raw_data in raw_data_vec {
-        let progress_tracker = if args.verbose {
-            None
+        // shared with the decoder's progress callback
+        let progress_tracker = if !args.verbose {
+            Some(Rc::new(RefCell::new(ProgressTracker::new(
+                raw_data.tid,
+                raw_data.data.len() as u64,
+            ))))
         } else {
-            Some(ProgressTracker::new(|num_traces| {
-                format!("Thread {} - produced {} traces", raw_data.tid, num_traces)
-            }))
+            None
         };
 
         let mut decoder_image =
@@ -112,7 +117,10 @@ fn main() {
             target_symbol: sym_regex.clone(),
             frame_completion_options: trace_options,
             max_traces: trace_limit,
-            progress_info: progress_tracker,
+            on_progress: progress_tracker.clone().map(|tracker| {
+                Box::new(move |bytes_processed| tracker.borrow_mut().set_progress(bytes_processed))
+                    as Box<dyn FnMut(u64)>
+            }),
         };
         let mut trace_iter = intel_pt::convert(
             &mut raw_data.data,
@@ -128,6 +136,10 @@ fn main() {
             .next()
             .expect("Unrecoverable error while decoding trace")
         {
+            if let Some(tracker) = &progress_tracker {
+                tracker.borrow_mut().incr_produced();
+            }
+
             let output_dir2 = output_dir.to_path_buf();
             threadpool.execute(move || {
                 let filename = format!(
@@ -145,6 +157,15 @@ fn main() {
                     .expect("Failed to binary encode trace");
                 info!("Finished exporting: {}", path.display());
             });
+        }
+
+        // the iterator owns the progress callback, so drop it to get sole ownership of the tracker
+        drop(trace_iter);
+        if let Some(tracker) = progress_tracker {
+            Rc::into_inner(tracker)
+                .expect("Progress tracker should have no other owners")
+                .into_inner()
+                .finish();
         }
     }
 

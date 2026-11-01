@@ -1,7 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
 use fallible_iterator::FallibleIterator;
-use indicatif::{ProgressBar, ProgressStyle};
 pub use libipt::enc_dec_builder::{Cpu, CpuVendor, Frequency};
 use libipt::{
     block::{Block, BlockDecoder},
@@ -21,9 +20,6 @@ use pt_fuser::trace::{
 };
 use regex::Regex;
 use tracing::{error, info, warn};
-
-pub const PROGRESS_STYLE_TEMPLATE: &str =
-    "[{wide_bar}] {percent}%\n   ↳ Estimated time remaining: {eta}\n     {msg}";
 
 pub trait ImageProvider {
     type ReadError: std::error::Error;
@@ -73,7 +69,7 @@ enum DecoderState {
     SyncForward,
 }
 
-struct Transformer<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> {
+struct Transformer<'a, 'b: 'a, 'c, I: ImageProvider> {
     decoder: BlockDecoder<'a, 'c>,
     // decoder holds a raw pointer to the buffer, which must outlive it
     _buffer: &'b [u8],
@@ -87,16 +83,16 @@ struct Transformer<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> {
     // tracks the reason why control flows from one block to the next
     branch_reason: Class,
     decoder_state: DecoderState,
-    progress_tracker: Option<ProgressTracker<F>>,
+    on_progress: Option<Box<dyn FnMut(u64)>>,
 }
 
-impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, 'b, 'c, I, F> {
+impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
     pub fn new(
         decoder: BlockDecoder<'a, 'c>,
         buffer: &'b [u8],
         image: Rc<RefCell<I>>,
         tsc_conversion: TscConversion,
-        opts: ConversionOpts<F>,
+        opts: ConversionOpts,
     ) -> Result<Self, PtError> {
         Ok(Self {
             decoder,
@@ -110,7 +106,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
             builder: None,
             branch_reason: Class::Unknown,
             decoder_state: DecoderState::SyncForward,
-            progress_tracker: opts.progress_info,
+            on_progress: opts.on_progress,
         })
     }
 
@@ -395,10 +391,10 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
 
     fn produce_trace(&mut self) -> Result<Option<Trace>, PtError> {
         loop {
-            if let Some(progress_tracker) = &mut self.progress_tracker
+            if let Some(on_offset) = &mut self.on_progress
                 && let Ok(cur_offset) = self.decoder.offset()
             {
-                progress_tracker.bar.set_position(cur_offset);
+                on_offset(cur_offset);
             }
 
             match self.decoder_state {
@@ -531,7 +527,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider, F: Fn(usize) -> String> Transformer<'a, '
     }
 }
 
-impl<I: ImageProvider, F: Fn(usize) -> String> FallibleIterator for Transformer<'_, '_, '_, I, F> {
+impl<I: ImageProvider> FallibleIterator for Transformer<'_, '_, '_, I> {
     type Item = Trace;
     type Error = PtError;
 
@@ -543,25 +539,7 @@ impl<I: ImageProvider, F: Fn(usize) -> String> FallibleIterator for Transformer<
                 *traces_left -= 1;
             }
         }
-        let result = self.produce_trace();
-        if let Some(mut progress_tracker) = self.progress_tracker.take() {
-            match &result {
-                Ok(Some(_)) => {
-                    progress_tracker.incr_produced();
-                    self.progress_tracker = Some(progress_tracker);
-                }
-                _ => {
-                    progress_tracker.bar.finish();
-                    self.progress_tracker = None;
-                    eprintln!(
-                        "\n\nProduced {} traces in {:2?}",
-                        progress_tracker.num_produced,
-                        progress_tracker.bar.elapsed()
-                    );
-                }
-            };
-        }
-        result
+        self.produce_trace()
     }
 }
 
@@ -578,38 +556,12 @@ impl TscConversion {
     }
 }
 
-pub struct ProgressTracker<F: Fn(usize) -> String> {
-    bar: ProgressBar,
-    produced_fn: F,
-    num_produced: usize,
-}
-
-impl<F: Fn(usize) -> String> ProgressTracker<F> {
-    pub fn new(produce_msg: F) -> Self {
-        let bar = ProgressBar::new(0);
-        bar.set_style(
-            ProgressStyle::with_template(PROGRESS_STYLE_TEMPLATE)
-                .expect("Failed to produce ProgressStyle"),
-        );
-        bar.set_message(produce_msg(0));
-        Self {
-            bar,
-            produced_fn: produce_msg,
-            num_produced: 0,
-        }
-    }
-
-    fn incr_produced(&mut self) {
-        self.num_produced += 1;
-        self.bar.set_message((self.produced_fn)(self.num_produced));
-    }
-}
-
-pub struct ConversionOpts<F: Fn(usize) -> String> {
+pub struct ConversionOpts {
     pub target_symbol: Regex,
     pub frame_completion_options: FrameCompletionOptions,
     pub max_traces: Option<usize>,
-    pub progress_info: Option<ProgressTracker<F>>,
+    /// Called on every decode step with the decoder's byte offset into the trace data.
+    pub on_progress: Option<Box<dyn FnMut(u64)>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -619,12 +571,12 @@ pub struct TraceMetadata {
     pub tsc_info: TscConversion,
 }
 
-pub fn convert<'a, 'b: 'a, 'c, I: ImageProvider + 'a + 'c, F: 'a + Fn(usize) -> String>(
+pub fn convert<'a, 'b: 'a, 'c, I: ImageProvider + 'a + 'c>(
     data: &'a mut [u8],
     decoder_image: &'b mut Image<'c>,
     image_provider: I,
     metadata: &TraceMetadata,
-    mut opts: ConversionOpts<F>,
+    opts: ConversionOpts,
 ) -> Result<impl FallibleIterator<Item = Trace, Error = PtError> + 'a, PtError> {
     let builder = EncoderDecoderBuilder::<BlockDecoder>::new()
         .cpu(metadata.cpu_info)
@@ -656,10 +608,6 @@ pub fn convert<'a, 'b: 'a, 'c, I: ImageProvider + 'a + 'c, F: 'a + Fn(usize) -> 
         },
     ));
     decoder.set_image(Some(decoder_image))?;
-
-    if let Some(progress_tracker) = &mut opts.progress_info {
-        progress_tracker.bar.set_length(data.len() as u64);
-    }
 
     Transformer::new(decoder, data, image_provider_cell, metadata.tsc_info, opts)
 }
