@@ -741,6 +741,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "circular-buffer"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "662f6b21c6e889ee4e3f449e197c40f03603472fcd40c709093d386e3dca07cf"
+
+[[package]]
 name = "clang-sys"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2952,6 +2958,7 @@ name = "process-trace"
 version = "0.5.0"
 dependencies = [
  "blazesym",
+ "circular-buffer",
  "clap",
  "cpp_demangle",
  "fallible-iterator",
@@ -3016,6 +3023,7 @@ dependencies = [
  "bloomfilter",
  "clap",
  "ctrlc",
+ "derive_more",
  "eframe",
  "egui",
  "egui_plot",

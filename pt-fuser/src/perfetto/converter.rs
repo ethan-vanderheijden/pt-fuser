@@ -10,8 +10,9 @@ use std::{
 use indexmap::IndexMap;
 use indicatif::{ProgressBar, ProgressStyle};
 use perfetto_rust::{
-    DebugAnnotation, DebugAnnotationName, EventName, InternedData, InternedString, TracePacket,
-    TrackDescriptor, TrackEvent, debug_annotation,
+    CounterDescriptor, DebugAnnotation, DebugAnnotationName, EventName, InternedData,
+    InternedString, TracePacket, TracePacketDefaults, TrackDescriptor, TrackEvent,
+    TrackEventDefaults, debug_annotation,
     trace_packet::{Data, OptionalTrustedPacketSequenceId, SequenceFlags},
     track_descriptor::{ChildTracksOrdering, StaticOrDynamicName},
     track_event::{self, NameField},
@@ -23,6 +24,7 @@ use crate::{
         Trace,
         frame::{Annotation, Chunk, Frame},
         metrics::MetricsRange,
+        trace_annotation::{DataRateEnd, DataRateStart, KnownAnnotation},
     },
 };
 
@@ -43,16 +45,22 @@ const TRACE_TRACK_NAME: &str = "Trace";
 const ERROR_TRACK_ID_BASE: u64 = 30;
 const ERROR_SEQUENCE_ID_BASE: u32 = 3;
 
+const DATA_RATE_TRACK_ID: u64 = 40;
+const DATA_RATE_SEQUENCE_ID: u32 = 4;
+const DATA_RATE_TRACK_NAME: &str = "Data Rate (MiB/s)";
+
 #[allow(clippy::too_many_arguments)]
 fn create_track(
     timestamp: u64,
     sequence_id: u32,
     uuid: u64,
+    is_counter: bool,
     name: String,
     desc: Option<String>,
     parent_uuid: Option<u64>,
     child_ordering: Option<ChildTracksOrdering>,
     sibling_order_rank: Option<i32>,
+    paired_counter_uuid: Option<u64>,
 ) -> TracePacket {
     let description = TrackDescriptor {
         parent_uuid,
@@ -61,6 +69,11 @@ fn create_track(
         description: desc,
         child_ordering: child_ordering.map(|x| x as i32),
         sibling_order_rank,
+        counter: if is_counter {
+            Some(CounterDescriptor::default())
+        } else {
+            None
+        },
         ..Default::default()
     };
     TracePacket {
@@ -72,6 +85,18 @@ fn create_track(
         first_packet_on_sequence: Some(true),
         timestamp: Some(timestamp),
         data: Some(Data::TrackDescriptor(description)),
+        trace_packet_defaults: Some(TracePacketDefaults {
+            track_event_defaults: Some(TrackEventDefaults {
+                track_uuid: Some(uuid),
+                extra_double_counter_track_uuids: if let Some(paired_uuid) = paired_counter_uuid {
+                    vec![paired_uuid]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
@@ -79,15 +104,19 @@ fn create_track(
 fn create_slice_begin(
     timestamp: u64,
     sequence_id: u32,
-    track_id: u64,
     name: NameField,
     debug_annotations: Option<Vec<DebugAnnotation>>,
+    counter: Option<f64>,
 ) -> TracePacket {
     let slice_begin_event = TrackEvent {
         r#type: Some(track_event::Type::SliceBegin as i32),
-        track_uuid: Some(track_id),
         name_field: Some(name),
         debug_annotations: debug_annotations.unwrap_or_default(),
+        extra_double_counter_values: if let Some(counter_value) = counter {
+            vec![counter_value]
+        } else {
+            vec![]
+        },
         ..Default::default()
     };
     TracePacket {
@@ -101,10 +130,14 @@ fn create_slice_begin(
     }
 }
 
-fn create_slice_end(timestamp: u64, sequence_id: u32, track_id: u64) -> TracePacket {
+fn create_slice_end(timestamp: u64, sequence_id: u32, counter: Option<f64>) -> TracePacket {
     let slice_end_event = TrackEvent {
         r#type: Some(track_event::Type::SliceEnd as i32),
-        track_uuid: Some(track_id),
+        extra_double_counter_values: if let Some(counter_value) = counter {
+            vec![counter_value]
+        } else {
+            vec![]
+        },
         ..Default::default()
     };
     TracePacket {
@@ -297,8 +330,7 @@ impl<'a> Converter<'a> {
         if let Some(stack) = &self.current_stack {
             // pretend all previous stack frames end here
             for _ in 0..stack.len() {
-                let slice_end =
-                    create_slice_end(metrics.start.ts, TRACE_SEQUENCE_ID, TRACE_TRACK_ID);
+                let slice_end = create_slice_end(metrics.start.ts, TRACE_SEQUENCE_ID, None);
                 completed_packets.send(slice_end).unwrap();
             }
 
@@ -309,9 +341,9 @@ impl<'a> Converter<'a> {
                 let slice_begin = create_slice_begin(
                     resume,
                     TRACE_SEQUENCE_ID,
-                    TRACE_TRACK_ID,
                     NameField::NameIid(stack_frame.iid),
                     stack_frame.annotations.clone(),
+                    None,
                 );
                 completed_packets.send(slice_begin).unwrap();
             }
@@ -328,14 +360,14 @@ impl<'a> Converter<'a> {
             let mut slice_begin = create_slice_begin(
                 metrics.start.ts,
                 TRACE_SEQUENCE_ID,
-                TRACE_TRACK_ID,
                 NameField::NameIid(iid),
+                None,
                 None,
             );
             slice_begin.interned_data = Some(intern_data);
             completed_packets.send(slice_begin).unwrap();
 
-            let slice_end = create_slice_end(metrics.end().ts, TRACE_SEQUENCE_ID, TRACE_TRACK_ID);
+            let slice_end = create_slice_end(metrics.end().ts, TRACE_SEQUENCE_ID, None);
             completed_packets.send(slice_end).unwrap();
         }
     }
@@ -360,12 +392,14 @@ impl<'a> Converter<'a> {
             .annotations
             .as_ref()
             .map(|a| self.convert_annotation_map(a, &mut intern_data));
+        let start_data_rate = DataRateStart::extract(frame).cloned();
+        let end_data_rate = DataRateEnd::extract(frame).cloned();
         let mut slice_begin = create_slice_begin(
             frame.metrics.start.ts,
             TRACE_SEQUENCE_ID,
-            TRACE_TRACK_ID,
             NameField::NameIid(iid),
             annotations.clone(),
+            start_data_rate,
         );
         slice_begin.interned_data = Some(intern_data);
         completed_packets.send(slice_begin).unwrap();
@@ -396,7 +430,7 @@ impl<'a> Converter<'a> {
         }
 
         let frame_end_ts = frame.metrics.end().ts;
-        let slice_end = create_slice_end(frame_end_ts, TRACE_SEQUENCE_ID, TRACE_TRACK_ID);
+        let slice_end = create_slice_end(frame_end_ts, TRACE_SEQUENCE_ID, end_data_rate);
         completed_packets.send(slice_end).unwrap();
         progress.set_position(frame_end_ts - progress_offset);
     }
@@ -415,10 +449,12 @@ impl<'a> Converter<'a> {
                 root_frame.metrics.start.ts,
                 GLOBAL_SEQUENCE_ID,
                 GLOBAL_TRACK_ID,
+                false,
                 GLOBAL_TRACK_NAME.to_string(),
                 None,
                 None,
                 Some(ChildTracksOrdering::Explicit),
+                None,
                 None,
             ))
             .unwrap();
@@ -426,8 +462,8 @@ impl<'a> Converter<'a> {
             .send(create_slice_begin(
                 root_frame.metrics.start.ts,
                 GLOBAL_SEQUENCE_ID,
-                GLOBAL_TRACK_ID,
                 NameField::Name("Overall Latency".to_string()),
+                None,
                 None,
             ))
             .unwrap();
@@ -435,7 +471,22 @@ impl<'a> Converter<'a> {
             .send(create_slice_end(
                 root_frame.metrics.end().ts,
                 GLOBAL_SEQUENCE_ID,
-                GLOBAL_TRACK_ID,
+                None,
+            ))
+            .unwrap();
+
+        completed_packets
+            .send(create_track(
+                root_frame.metrics.start.ts,
+                DATA_RATE_SEQUENCE_ID,
+                DATA_RATE_TRACK_ID,
+                true,
+                DATA_RATE_TRACK_NAME.to_string(),
+                None,
+                Some(GLOBAL_TRACK_ID),
+                None,
+                Some(-1),
+                None,
             ))
             .unwrap();
 
@@ -444,11 +495,13 @@ impl<'a> Converter<'a> {
                 root_frame.metrics.start.ts,
                 TRACE_SEQUENCE_ID,
                 TRACE_TRACK_ID,
+                false,
                 TRACE_TRACK_NAME.to_string(),
                 None,
                 Some(GLOBAL_TRACK_ID),
                 None,
                 Some(i32::MAX),
+                Some(DATA_RATE_TRACK_ID),
             ))
             .unwrap();
 
@@ -462,11 +515,13 @@ impl<'a> Converter<'a> {
                     first_occurence.ts,
                     ERROR_SEQUENCE_ID_BASE + event.id,
                     ERROR_TRACK_ID_BASE + event.id as u64,
+                    false,
                     event.name.clone(),
                     Some(event.description.clone()),
                     Some(GLOBAL_TRACK_ID),
                     None,
                     Some(scaled_id),
+                    None,
                 );
 
                 let interned_data = InternedData {

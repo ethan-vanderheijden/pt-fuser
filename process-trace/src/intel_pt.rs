@@ -16,10 +16,13 @@ use pt_fuser::trace::{
     SymbolInfo, Trace,
     builder::{BuilderResult, FrameCompletionOptions, PausedTraceBuilder, TraceBuilder},
     metrics::Metrics,
-    trace_error::{DataCollectionError, TraceInterrupted},
+    trace_annotation::{DataRateEnd, DataRateStart},
+    trace_error::{DataCollectionError, KnownError, TraceInterrupted},
 };
 use regex::Regex;
 use tracing::{error, info, warn};
+
+use crate::data_rate::DataRateHistogram;
 
 pub trait ImageProvider {
     type ReadError: std::error::Error;
@@ -78,6 +81,7 @@ struct Transformer<'a, 'b: 'a, 'c, I: ImageProvider> {
     target_symbol: Regex,
     frame_completion_options: FrameCompletionOptions,
     traces_left: Option<usize>,
+    data_rate_tracker: Option<DataRateHistogram>,
     cur_metrics: Metrics,
     builder: Option<BuilderState>,
     // tracks the reason why control flows from one block to the next
@@ -102,6 +106,7 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
             target_symbol: opts.target_symbol,
             frame_completion_options: opts.frame_completion_options,
             traces_left: opts.max_traces,
+            data_rate_tracker: opts.data_rate_tracker,
             cur_metrics: Metrics::constant(0),
             builder: None,
             branch_reason: Class::Unknown,
@@ -141,12 +146,18 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
             self.process_return_event(builder, depth)
         } else {
             builder.push_frame(self.cur_metrics, call_target);
+            if let Some(tracker) = &self.data_rate_tracker {
+                builder.add_annotation::<DataRateStart>(tracker.rate());
+            }
             BuilderResult::Builder(builder)
         }
     }
 
     fn process_return_event(&self, mut builder: TraceBuilder, levels: usize) -> BuilderResult {
         for i in 1..=levels {
+            if let Some(tracker) = &self.data_rate_tracker {
+                builder.add_annotation::<DataRateEnd>(tracker.rate());
+            }
             builder = match builder
                 .complete_frame(self.cur_metrics, Some(self.frame_completion_options))
                 .expect("Failed to complete stack frame")
@@ -473,8 +484,14 @@ impl<'a, 'b: 'a, 'c, I: ImageProvider> Transformer<'a, 'b, 'c, I> {
                     match self.decoder.decode_next() {
                         Ok((block, status)) => {
                             self.update_state(status);
+
                             let (tsc, _, _) = self.decoder.time()?;
                             self.update_cur_metrics(tsc, block.ninsn() as u64);
+
+                            if let Some(tracker) = &mut self.data_rate_tracker {
+                                tracker.update(self.decoder.offset()?, self.cur_metrics.ts);
+                            }
+
                             if let Some(finished_trace) = self.process_block(block) {
                                 return Ok(Some(finished_trace));
                             }
@@ -560,6 +577,7 @@ pub struct ConversionOpts {
     pub target_symbol: Regex,
     pub frame_completion_options: FrameCompletionOptions,
     pub max_traces: Option<usize>,
+    pub data_rate_tracker: Option<DataRateHistogram>,
     /// Called on every decode step with the decoder's byte offset into the trace data.
     pub on_progress: Option<Box<dyn FnMut(u64)>>,
 }

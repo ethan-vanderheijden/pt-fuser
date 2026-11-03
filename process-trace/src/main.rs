@@ -1,3 +1,4 @@
+mod data_rate;
 mod elf_image;
 mod intel_pt;
 mod perf_data;
@@ -21,7 +22,7 @@ use regex::Regex;
 use threadpool::ThreadPool;
 use tracing::{Level, error, info};
 
-use crate::{intel_pt::ConversionOpts, progress::ProgressTracker};
+use crate::{data_rate::DataRateHistogram, intel_pt::ConversionOpts, progress::ProgressTracker};
 
 #[derive(Parser)]
 #[command(
@@ -46,7 +47,25 @@ pub struct Args {
         default_value_t = true,
         help = "Remove @plt stub functions from cluttering up the trace"
     )]
-    remove_plt_stubs: bool,
+    remove_plt_stubs: std::primitive::bool,
+    #[clap(
+        long,
+        default_value_t = 500,
+        help = "Sliding window (in nanoseconds) over which the data rate is calculated"
+    )]
+    data_rate_window: u64,
+    #[clap(
+        long,
+        default_value_t = 25,
+        help = "Roughly how often (in nanoseconds) the data rate calculation is updated"
+    )]
+    data_rate_granularity: u64,
+    #[clap(
+        long,
+        default_value_t = false,
+        help = "Do not measure Intel PT's produced data rate (overrides --data_rate_window and --data_rate_granularity)"
+    )]
+    no_data_rate: bool,
     #[clap(
         long,
         short = 'v',
@@ -117,6 +136,14 @@ fn main() {
             target_symbol: sym_regex.clone(),
             frame_completion_options: trace_options,
             max_traces: trace_limit,
+            data_rate_tracker: if !args.no_data_rate {
+                Some(DataRateHistogram::new(
+                    args.data_rate_window,
+                    args.data_rate_granularity,
+                ))
+            } else {
+                None
+            },
             on_progress: progress_tracker.clone().map(|tracker| {
                 Box::new(move |bytes_processed| tracker.borrow_mut().set_progress(bytes_processed))
                     as Box<dyn FnMut(u64)>
@@ -159,13 +186,8 @@ fn main() {
             });
         }
 
-        // the iterator owns the progress callback, so drop it to get sole ownership of the tracker
-        drop(trace_iter);
         if let Some(tracker) = progress_tracker {
-            Rc::into_inner(tracker)
-                .expect("Progress tracker should have no other owners")
-                .into_inner()
-                .finish();
+            tracker.borrow().finish();
         }
     }
 

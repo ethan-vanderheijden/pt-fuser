@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use thin_vec::ThinVec;
 
 use crate::trace::{
-    Error, SymbolInfo,
-    metrics::{Metrics, MetricsRange},
+    Error, SymbolInfo, metrics::{Metrics, MetricsRange}, trace_annotation::{AnnotationProvider, RootAnnotations},
 };
 
 mod ordered_annotations_serde {
@@ -42,12 +41,16 @@ mod ordered_annotations_serde {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, derive_more::TryInto, derive_more::From,
+)]
+#[try_into(ref, ref_mut)]
 pub enum Annotation {
     Bool(bool),
     Uint64(u64),
     Int64(i64),
     /// Displayed differently from Uint64 in Perfetto UI
+    #[from(skip)]
     Pointer(u64),
     Double(f64),
     String(String),
@@ -115,7 +118,7 @@ pub struct Frame {
     symbol: Arc<SymbolInfo>,
     pub metrics: MetricsRange,
     #[serde(with = "ordered_annotations_serde")]
-    pub annotations: Option<Box<IndexMap<String, Annotation>>>,
+    pub annotations: RootAnnotations,
     // To stay memory efficient, only store chunks for Frames, Pauses, etc.
     // Straightline chunks will be injected on the fly when calling chunks() function
     chunks: ThinVec<StoredChunk>,
@@ -130,6 +133,16 @@ impl Display for Frame {
             self.metrics.start,
             self.metrics.end()
         )
+    }
+}
+
+impl AnnotationProvider for Frame {
+    fn annotations(&self) -> &RootAnnotations {
+        &self.annotations
+    }
+
+    fn annotations_mut(&mut self) -> &mut RootAnnotations {
+        &mut self.annotations
     }
 }
 

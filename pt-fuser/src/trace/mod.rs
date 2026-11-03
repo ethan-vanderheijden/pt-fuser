@@ -1,6 +1,7 @@
 pub mod builder;
 pub mod frame;
 pub mod metrics;
+pub mod trace_annotation;
 pub mod trace_error;
 
 #[cfg(test)]

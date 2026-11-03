@@ -1,55 +1,57 @@
+use indexmap::IndexMap;
+
 use crate::{
     analysis,
     trace::{
         Trace,
         frame::{Annotation, Chunk, Frame},
+        trace_annotation::{
+            KnownAnnotation, MergingNoiseContribution, MergingRawLatencies, MergingStats,
+        },
     },
 };
-
-pub(super) const ANNOTATION_STATS_CATEGORY: &str = "Merging Stats";
-pub(super) const ANNOTATION_RAW_LATENCY_CATEGORY: &str = "Merging Raw Latencies";
-
-pub(super) const ANNOTATION_COUNT_NAME: &str = "Count";
-pub(super) const ANNOTATION_NOISE_CONTRIBUTION_NAME: &str = "Noise Contribution (NC)";
 
 pub type StatsGenerator = Box<dyn StatsProvider>;
 
 pub trait StatsProvider {
+    type Annotation: KnownAnnotation
+    where
+        Self: Sized;
+
     fn prepare(named_traces: &[(&str, &Trace)]) -> Option<Self>
     where
         Self: Sized;
-    fn category(&self) -> Option<&'static str>;
-    fn compute(&self, indexed_frames: &[(usize, &Frame)]) -> Vec<(String, Annotation)>;
+    fn add_stats(&self, target: &mut Frame, indexed_frames: &[(usize, &Frame)]);
 }
 
 pub struct BasicStats {}
 
+impl BasicStats {
+    const COUNT_NAME: &'static str = "Count";
+}
+
 impl StatsProvider for BasicStats {
+    type Annotation = MergingStats;
+
     fn prepare(_traces: &[(&str, &Trace)]) -> Option<Self> {
         Some(BasicStats {})
     }
 
-    fn category(&self) -> Option<&'static str> {
-        Some(ANNOTATION_STATS_CATEGORY)
-    }
-
-    fn compute(&self, indexed_frames: &[(usize, &Frame)]) -> Vec<(String, Annotation)> {
+    fn add_stats(&self, target: &mut Frame, indexed_frames: &[(usize, &Frame)]) {
         let latencies = indexed_frames
             .iter()
             .map(|(_, frame)| frame.metrics.total_time() as f64)
             .collect::<Vec<_>>();
         if let Some(stats) = analysis::Stats::from_data(latencies) {
-            let mut stats = stats
-                .into_iter()
-                .map(|(name, v)| (name, Annotation::Double(v)))
-                .collect::<Vec<_>>();
-            stats.push((
-                ANNOTATION_COUNT_NAME.to_string(),
+            let mut map = IndexMap::new();
+            for (name, value) in stats.into_iter() {
+                map.insert(name, Annotation::Double(value));
+            }
+            map.insert(
+                Self::COUNT_NAME.to_string(),
                 Annotation::Uint64(indexed_frames.len() as u64),
-            ));
-            stats
-        } else {
-            Vec::new()
+            );
+            Self::Annotation::insert(target, map);
         }
     }
 }
@@ -59,6 +61,8 @@ pub struct RawLatencies {
 }
 
 impl StatsProvider for RawLatencies {
+    type Annotation = MergingRawLatencies;
+
     fn prepare(named_traces: &[(&str, &Trace)]) -> Option<Self> {
         let trace_names = named_traces
             .iter()
@@ -67,20 +71,17 @@ impl StatsProvider for RawLatencies {
         Some(RawLatencies { trace_names })
     }
 
-    fn category(&self) -> Option<&'static str> {
-        Some(ANNOTATION_RAW_LATENCY_CATEGORY)
-    }
-
-    fn compute(&self, indexed_frames: &[(usize, &Frame)]) -> Vec<(String, Annotation)> {
-        indexed_frames
-            .iter()
-            .map(|(idx, frame)| {
-                (
+    fn add_stats(&self, target: &mut Frame, indexed_frames: &[(usize, &Frame)]) {
+        if !indexed_frames.is_empty() {
+            let mut map = IndexMap::new();
+            for (idx, frame) in indexed_frames {
+                map.insert(
                     self.trace_names[*idx].clone(),
                     Annotation::Uint64(frame.metrics.total_time()),
-                )
-            })
-            .collect::<Vec<_>>()
+                );
+            }
+            Self::Annotation::insert(target, map);
+        }
     }
 }
 
@@ -126,6 +127,8 @@ impl NoiseContribution {
 }
 
 impl StatsProvider for NoiseContribution {
+    type Annotation = MergingNoiseContribution;
+
     fn prepare(named_traces: &[(&str, &Trace)]) -> Option<Self> {
         let latencies = named_traces
             .iter()
@@ -137,11 +140,7 @@ impl StatsProvider for NoiseContribution {
         })
     }
 
-    fn category(&self) -> Option<&'static str> {
-        Some(ANNOTATION_STATS_CATEGORY)
-    }
-
-    fn compute(&self, indexed_frames: &[(usize, &Frame)]) -> Vec<(String, Annotation)> {
+    fn add_stats(&self, target: &mut Frame, indexed_frames: &[(usize, &Frame)]) {
         let mut root_latencies = Vec::with_capacity(indexed_frames.len());
         for (idx, _) in indexed_frames {
             root_latencies.push(self.e2e_latencies[*idx]);
@@ -159,12 +158,8 @@ impl StatsProvider for NoiseContribution {
             {
                 // NC(A) = (SD(LE2E) - SD(LE2E - LA)) / SD(LE2E)
                 // LA is A's inclusive or exclusive latency, depending on `mode`
-                return vec![(
-                    ANNOTATION_NOISE_CONTRIBUTION_NAME.to_string(),
-                    Annotation::Double(1.0 - new_stats.stddev / root_stats.stddev),
-                )];
+                Self::Annotation::insert(target, 1.0 - new_stats.stddev / root_stats.stddev);
             }
         }
-        Vec::new()
     }
 }

@@ -4,7 +4,12 @@ use regex::Regex;
 
 use crate::{
     analysis::FrameFinder,
-    trace::{Event, Trace, frame::Frame, metrics::MetricsRange, trace_error},
+    trace::{
+        Event, Trace,
+        frame::Frame,
+        metrics::MetricsRange,
+        trace_error::{self, KnownError},
+    },
 };
 
 #[derive(Debug, Clone, Default)]

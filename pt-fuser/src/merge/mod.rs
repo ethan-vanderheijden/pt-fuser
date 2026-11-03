@@ -7,7 +7,6 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
-use indexmap::IndexMap;
 use tracing::{info, warn};
 
 use crate::{
@@ -15,9 +14,9 @@ use crate::{
     trace::{
         Event, Trace,
         builder::SymbolCache,
-        frame::{Annotation, Chunk, Frame},
+        frame::{Chunk, Frame},
         metrics::{Metrics, MetricsRange},
-        trace_error,
+        trace_error::{self, KnownError},
     },
 };
 
@@ -404,24 +403,7 @@ fn fill_annotations(
     stats_generators: &[StatsGenerator],
 ) {
     for stats_gen in stats_generators {
-        for (name, value) in stats_gen.compute(original_frames) {
-            let annotations = merged_frame.get_or_default_annotation();
-            let target_map = if let Some(category) = stats_gen.category() {
-                match annotations.get_mut(category) {
-                    Some(Annotation::Map(map)) => map,
-                    _ => {
-                        annotations.insert(category.to_string(), Annotation::Map(IndexMap::new()));
-                        match annotations.get_mut(category) {
-                            Some(Annotation::Map(map)) => map,
-                            _ => unreachable!(),
-                        }
-                    }
-                }
-            } else {
-                annotations
-            };
-            target_map.insert(name, value);
-        }
+        stats_gen.add_stats(merged_frame, original_frames);
     }
 }
 

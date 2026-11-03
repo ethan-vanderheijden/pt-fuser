@@ -28,21 +28,27 @@ impl ProgressTracker {
     }
 
     pub fn set_progress(&self, bytes_processed: u64) {
-        self.bar.set_position(bytes_processed);
+        if !self.bar.is_finished() {
+            self.bar.set_position(bytes_processed);
+        }
     }
 
     pub fn incr_produced(&mut self) {
-        self.num_produced += 1;
-        self.update_message();
+        if !self.bar.is_finished() {
+            self.num_produced += 1;
+            self.update_message();
+        }
     }
 
-    pub fn finish(self) {
-        self.bar.finish();
-        eprintln!(
-            "\n\nProduced {} traces in {:2?}",
-            self.num_produced,
-            self.bar.elapsed()
-        );
+    pub fn finish(&self) {
+        if !self.bar.is_finished() {
+            self.bar.finish();
+            eprintln!(
+                "\n\nProduced {} traces in {:2?}",
+                self.num_produced,
+                self.bar.elapsed()
+            );
+        }
     }
 
     fn update_message(&self) {

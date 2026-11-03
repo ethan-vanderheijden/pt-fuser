@@ -3,7 +3,9 @@ use std::sync::Arc;
 use bloomfilter::Bloom;
 
 use crate::trace::{
-    self, Event, Frame, Metrics, MetricsRange, SymbolInfo, Trace, frame::StoredChunk,
+    self, Event, Frame, Metrics, MetricsRange, SymbolInfo, Trace,
+    frame::StoredChunk,
+    trace_annotation::{AnnotationProvider, KnownAnnotation, RootAnnotations},
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -24,6 +26,17 @@ struct IncompleteFrame {
     children: Vec<StoredChunk>,
     symbol_idx: usize,
     symbol: Arc<SymbolInfo>,
+    annotations: RootAnnotations,
+}
+
+impl AnnotationProvider for IncompleteFrame {
+    fn annotations(&self) -> &RootAnnotations {
+        &self.annotations
+    }
+
+    fn annotations_mut(&mut self) -> &mut RootAnnotations {
+        &mut self.annotations
+    }
 }
 
 impl IncompleteFrame {
@@ -55,6 +68,7 @@ impl IncompleteFrame {
             self.symbol_idx,
             self.symbol,
         );
+        completed.annotations = self.annotations;
 
         for child in self.children.into_iter() {
             match child {
@@ -108,6 +122,7 @@ impl TraceBuilder {
                 children: Vec::new(),
                 symbol_idx: sym_idx,
                 symbol: sym_ref,
+                annotations: None,
             },
             callstack: Vec::new(),
             events: Vec::new(),
@@ -122,6 +137,7 @@ impl TraceBuilder {
             children: Vec::new(),
             symbol_idx: sym_idx,
             symbol: self.symbol_cache.get_ref(sym_idx),
+            annotations: None,
         };
         let old_frame = std::mem::replace(&mut self.current_frame, new_frame);
         self.callstack.push(old_frame);
@@ -162,6 +178,10 @@ impl TraceBuilder {
                 event.add_occurence(metrics);
             }
         }
+    }
+
+    pub fn add_annotation<A: KnownAnnotation>(&mut self, value: A::Value) {
+        A::insert(&mut self.current_frame, value);
     }
 
     pub fn callstack_depth(&self) -> usize {
@@ -252,7 +272,11 @@ impl SymbolCache {
 #[cfg(test)]
 mod test {
     use super::*;
-    use trace::{frame::Chunk, test::*};
+    use trace::{
+        frame::Chunk,
+        test::*,
+        trace_annotation::{DataRateEnd, DataRateStart, MergingNoiseContribution},
+    };
 
     fn extract_builder(result: BuilderResult) -> TraceBuilder {
         match result {
@@ -268,6 +292,7 @@ mod test {
             children: Vec::new(),
             symbol_idx: 0,
             symbol: TEST_SYMBOL.clone(),
+            annotations: None,
         };
         let completed = incomplete
             .complete(&SAMPLE_RANGE_END, FrameCompletionOptions::default())
@@ -285,6 +310,7 @@ mod test {
             children: vec![StoredChunk::Frame(inner1), StoredChunk::Frame(inner2)],
             symbol_idx: 0,
             symbol: TEST_SYMBOL.clone(),
+            annotations: None,
         };
         let completed = incomplete
             .complete(&SAMPLE_RANGE_END, FrameCompletionOptions::default())
@@ -311,6 +337,7 @@ mod test {
             ],
             symbol_idx: 0,
             symbol: TEST_SYMBOL.clone(),
+            annotations: None,
         };
         let completed = incomplete
             .complete(&SAMPLE_RANGE_END, FrameCompletionOptions::default())
@@ -344,6 +371,7 @@ mod test {
                 vaddr_start: 0,
                 size: 0,
             }),
+            annotations: None,
         };
         let completed = incomplete
             .complete(
@@ -559,6 +587,34 @@ mod test {
             }
             BuilderResult::Builder(_) => panic!("Expected trace to be completed"),
         }
+    }
+
+    #[test]
+    fn add_annotations() {
+        let mut builder = TraceBuilder::new(SAMPLE_RANGE.start, TEST_SYMBOL.as_ref().clone());
+        builder.add_annotation::<DataRateStart>(1.0);
+
+        builder.push_frame(INNER_RANGE1.start, TEST_SYMBOL.as_ref().clone());
+        builder.add_annotation::<DataRateEnd>(2.0);
+        let mut builder = extract_builder(builder.complete_frame(INNER_RANGE1_END, None).unwrap());
+
+        builder.add_annotation::<MergingNoiseContribution>(0.5);
+
+        let trace = match builder.complete_frame(SAMPLE_RANGE_END, None).unwrap() {
+            BuilderResult::Completed(trace) => trace,
+            BuilderResult::Builder(_) => panic!("Expected trace to be completed"),
+        };
+
+        let root = trace.root_frame();
+        assert_eq!(DataRateStart::extract(root), Some(&1.0));
+        assert_eq!(MergingNoiseContribution::extract(root), Some(&0.5));
+        assert_eq!(DataRateEnd::extract(root), None);
+
+        let root_chunks = root.chunks().collect::<Vec<_>>();
+        let child = extract_frame_chunk(&root_chunks[1]);
+        assert_eq!(DataRateEnd::extract(child), Some(&2.0));
+        assert_eq!(DataRateStart::extract(child), None);
+        assert_eq!(MergingNoiseContribution::extract(child), None);
     }
 
     #[test]

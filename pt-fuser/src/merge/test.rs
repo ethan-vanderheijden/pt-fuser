@@ -4,9 +4,7 @@ use crate::{
     merge::{
         self,
         stats::{
-            ANNOTATION_COUNT_NAME, ANNOTATION_NOISE_CONTRIBUTION_NAME,
-            ANNOTATION_RAW_LATENCY_CATEGORY, ANNOTATION_STATS_CATEGORY, BasicStats,
-            NoiseContribution, NoiseContributionMode, RawLatencies, StatsProvider,
+            BasicStats, NoiseContribution, NoiseContributionMode, RawLatencies, StatsProvider,
         },
     },
     trace::{
@@ -14,6 +12,9 @@ use crate::{
         builder::SymbolCache,
         frame::{Annotation, Chunk, Frame},
         metrics::{Metrics, MetricsRange},
+        trace_annotation::{
+            KnownAnnotation, MergingNoiseContribution, MergingRawLatencies, MergingStats,
+        },
     },
 };
 
@@ -575,20 +576,14 @@ fn merge_frame_with_anotations() {
     );
     assert_eq!(merged.root_frame().chunks().count(), 3);
 
-    let root_anotations = merged.root_frame().annotations.as_ref().unwrap();
-    let root_stats = match &root_anotations[ANNOTATION_STATS_CATEGORY] {
-        Annotation::Map(stats) => stats,
-        _ => panic!("Expected stats annotation to be a map"),
-    };
+    let root_stats = MergingStats::extract(merged.root_frame())
+        .expect("Root frame should have Merging Stats annotation");
 
     let child = merged.root_frame().chunks().nth(1).unwrap();
-    let child_anotations = extract_frame_chunk(&child).annotations.as_ref().unwrap();
-    let child_stats = match &child_anotations[ANNOTATION_STATS_CATEGORY] {
-        Annotation::Map(stats) => stats,
-        _ => panic!("Expected stats annotation to be a map"),
-    };
+    let child_stats = MergingStats::extract(extract_frame_chunk(&child))
+        .expect("Child frame should have Merging Stats annotation");
 
-    assert_eq!(root_stats[ANNOTATION_COUNT_NAME], Annotation::Uint64(12));
+    assert_eq!(root_stats["Count"], Annotation::Uint64(12));
     assert_eq!(root_stats["Min"], Annotation::Double(78.0));
     assert_eq!(root_stats["Q1"], Annotation::Double(83.0));
     assert_eq!(root_stats["Median"], Annotation::Double(89.0));
@@ -606,15 +601,15 @@ fn merge_frame_with_anotations() {
         _ => panic!("Expected std dev annotation to be a double"),
     }
     assert_eq!(
-        root_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME],
+        root_stats[MergingNoiseContribution::NAME],
         Annotation::Double(1.0)
     );
     assert_eq!(
-        root_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME],
+        root_stats[MergingNoiseContribution::NAME],
         Annotation::Double(1.0)
     );
 
-    assert_eq!(child_stats[ANNOTATION_COUNT_NAME], Annotation::Uint64(10));
+    assert_eq!(child_stats["Count"], Annotation::Uint64(10));
     assert_eq!(child_stats["Min"], Annotation::Double(11.0));
     assert_eq!(child_stats["Q1"], Annotation::Double(13.0));
     assert_eq!(child_stats["Median"], Annotation::Double(15.5));
@@ -632,7 +627,7 @@ fn merge_frame_with_anotations() {
         _ => panic!("Expected std dev annotation to be a double"),
     }
     assert_eq!(
-        child_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME],
+        child_stats[MergingNoiseContribution::NAME],
         Annotation::Double(0.5)
     );
 }
@@ -659,14 +654,12 @@ fn merge_frame_omits_annotations_when_not_requested() {
     let raw_latencies = Box::new(RawLatencies::prepare(&named_traces).unwrap());
 
     let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), vec![raw_latencies]);
-    let root_annotations = merged.root_frame().annotations.as_ref().unwrap();
-    assert!(!root_annotations.contains_key(ANNOTATION_STATS_CATEGORY));
-    assert!(root_annotations.contains_key(ANNOTATION_RAW_LATENCY_CATEGORY));
+    assert!(MergingStats::extract(merged.root_frame()).is_none());
+    assert!(MergingRawLatencies::extract(merged.root_frame()).is_some());
 
     let child = merged.root_frame().chunks().nth(1).unwrap();
-    let child_annotations = extract_frame_chunk(&child).annotations.as_ref().unwrap();
-    assert!(!child_annotations.contains_key(ANNOTATION_STATS_CATEGORY));
-    assert!(child_annotations.contains_key(ANNOTATION_RAW_LATENCY_CATEGORY));
+    assert!(MergingStats::extract(extract_frame_chunk(&child)).is_none());
+    assert!(MergingRawLatencies::extract(extract_frame_chunk(&child)).is_some());
 }
 
 #[test]
@@ -701,17 +694,10 @@ fn merge_frame_omits_noise_contribution_when_root_stddev_is_zero() {
         &traces.iter().collect::<Vec<_>>(),
         vec![noise_contrib, basic_stats],
     );
-    let root_annotations = merged.root_frame().annotations.as_ref().unwrap();
-    let root_stats = match &root_annotations[ANNOTATION_STATS_CATEGORY] {
-        Annotation::Map(stats) => stats,
-        _ => panic!("Expected stats annotation to be a map"),
-    };
-    assert!(root_stats.contains_key(ANNOTATION_NOISE_CONTRIBUTION_NAME));
+    assert!(MergingNoiseContribution::extract(merged.root_frame()).is_some());
 
     let child = merged.root_frame().chunks().nth(1).unwrap();
-    println!("{:?}", extract_frame_chunk(&child).annotations);
-    let child_annotations = extract_frame_chunk(&child).annotations.as_ref().unwrap();
-    assert!(!child_annotations.contains_key(ANNOTATION_NOISE_CONTRIBUTION_NAME));
+    assert!(MergingNoiseContribution::extract(extract_frame_chunk(&child)).is_none());
 }
 
 #[test]
@@ -751,33 +737,19 @@ fn merge_frame_adds_noise_contribution_to_nested_frame_with_missing_traces() {
     let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), vec![noise_contrib]);
     let outer = merged.root_frame().chunks().nth(1).unwrap();
     let outer = extract_frame_chunk(&outer);
-    let outer_annotations = outer.annotations.as_ref().unwrap();
-    let outer_stats = match &outer_annotations[ANNOTATION_STATS_CATEGORY] {
-        Annotation::Map(stats) => stats,
-        _ => panic!("Expected outer stats annotation to be a map"),
-    };
-    assert_eq!(
-        outer_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME],
-        Annotation::Double(1.0)
-    );
+    let outer_nc = MergingNoiseContribution::extract(outer)
+        .expect("Outer frame should have Merging Noise Contribution annotation");
+    assert_eq!(*outer_nc, 1.0);
 
     let nested = outer.chunks().nth(1).unwrap();
     let nested = extract_frame_chunk(&nested);
-    let nested_annotations = nested.annotations.as_ref().unwrap();
-    let nested_stats = match &nested_annotations[ANNOTATION_STATS_CATEGORY] {
-        Annotation::Map(stats) => stats,
-        _ => panic!("Expected nested stats annotation to be a map"),
-    };
-    match &nested_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME] {
-        Annotation::Double(noise_contribution) => {
-            assert_eq!(
-                (noise_contribution * 100.0).round(),
-                33.0,
-                "Expected std dev to be approximately 0.33"
-            );
-        }
-        _ => panic!("Expected nested noise contribution annotation to be a double"),
-    }
+    let nested_nc = MergingNoiseContribution::extract(nested)
+        .expect("Nested frame should have Merging Noise Contribution annotation");
+    assert_eq!(
+        (nested_nc * 100.0).round(),
+        33.0,
+        "Expected std dev to be approximately 0.33"
+    );
 }
 
 #[test]
@@ -817,41 +789,25 @@ fn merge_frame_adds_exclusive_noise_contribution() {
     );
 
     let merged = merge::merge_traces(&traces.iter().collect::<Vec<_>>(), vec![noise_contrib]);
-    let root_annotations = merged.root_frame().annotations.as_ref().unwrap();
-    let root_stats = match &root_annotations[ANNOTATION_STATS_CATEGORY] {
-        Annotation::Map(stats) => stats,
-        _ => panic!("Expected stats annotation to be a map"),
-    };
+    let root_nc = MergingNoiseContribution::extract(merged.root_frame())
+        .expect("Root frame should have Merging Noise Contribution annotation");
     // LE2E - LA = child latencies => NC = 1 - SD(child) / SD(E2E) = 1 - 5 / 10
-    match &root_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME] {
-        Annotation::Double(noise_contribution) => {
-            assert_eq!(
-                (noise_contribution * 100.0).round(),
-                50.0,
-                "Expected root exclusive noise contribution to be approximately 0.5"
-            );
-        }
-        _ => panic!("Expected root noise contribution annotation to be a double"),
-    }
+    assert_eq!(
+        (root_nc * 100.0).round(),
+        50.0,
+        "Expected root exclusive noise contribution to be approximately 0.5"
+    );
 
     let child = merged.root_frame().chunks().nth(1).unwrap();
-    let child_annotations = extract_frame_chunk(&child).annotations.as_ref().unwrap();
-    let child_stats = match &child_annotations[ANNOTATION_STATS_CATEGORY] {
-        Annotation::Map(stats) => stats,
-        _ => panic!("Expected stats annotation to be a map"),
-    };
+    let child_nc = MergingNoiseContribution::extract(extract_frame_chunk(&child))
+        .expect("Child frame should have Merging Noise Contribution annotation");
     // "a" has no child frames, so its exclusive latency equals its total latency
     // LE2E - LA: 90, 95, ..., 145 => NC = 1 - 5 / 10
-    match &child_stats[ANNOTATION_NOISE_CONTRIBUTION_NAME] {
-        Annotation::Double(noise_contribution) => {
-            assert_eq!(
-                (noise_contribution * 100.0).round(),
-                50.0,
-                "Expected child exclusive noise contribution to be approximately 0.5"
-            );
-        }
-        _ => panic!("Expected child noise contribution annotation to be a double"),
-    }
+    assert_eq!(
+        (child_nc * 100.0).round(),
+        50.0,
+        "Expected child exclusive noise contribution to be approximately 0.5"
+    );
 }
 
 #[test]
@@ -898,58 +854,30 @@ fn merge_traces_export_raw() {
     let raw_latencies = Box::new(RawLatencies::prepare(&named_traces).unwrap());
 
     let merged = merge::merge_traces(&traces, vec![raw_latencies]);
-    let root_frame = merged.root_frame();
-    let root_raw_data = root_frame
-        .annotations
-        .as_ref()
-        .unwrap()
-        .get(ANNOTATION_RAW_LATENCY_CATEGORY)
+    let root_raw = MergingRawLatencies::extract(merged.root_frame())
         .expect("Root frame should have raw data annotation");
-    match root_raw_data {
-        Annotation::Map(map) => {
-            assert_eq!(map.get("t1"), Some(&Annotation::Uint64(100)));
-            assert_eq!(map.get("t2"), Some(&Annotation::Uint64(100)));
-            assert_eq!(map.get("t3"), Some(&Annotation::Uint64(100)));
-            assert_eq!(map.get("t4"), Some(&Annotation::Uint64(100)));
-        }
-        _ => panic!("Expected root raw data annotation to be a map"),
-    }
+    assert_eq!(root_raw.get("t1"), Some(&Annotation::Uint64(100)));
+    assert_eq!(root_raw.get("t2"), Some(&Annotation::Uint64(100)));
+    assert_eq!(root_raw.get("t3"), Some(&Annotation::Uint64(100)));
+    assert_eq!(root_raw.get("t4"), Some(&Annotation::Uint64(100)));
 
-    let child = root_frame.chunks().next().unwrap();
+    let child = merged.root_frame().chunks().next().unwrap();
     let child = extract_frame_chunk(&child);
-    let child_raw_data = child
-        .annotations
-        .as_ref()
-        .unwrap()
-        .get(ANNOTATION_RAW_LATENCY_CATEGORY)
-        .expect("Child frame should have raw data annotation");
-    match child_raw_data {
-        Annotation::Map(map) => {
-            assert_eq!(map.get("t1"), Some(&Annotation::Uint64(90)));
-            assert_eq!(map.get("t2"), Some(&Annotation::Uint64(80)));
-            assert_eq!(map.get("t3"), Some(&Annotation::Uint64(64)));
-            assert_eq!(map.get("t4"), Some(&Annotation::Uint64(80)));
-        }
-        _ => panic!("Expected child raw data annotation to be a map"),
-    }
+    let child_raw =
+        MergingRawLatencies::extract(child).expect("Child frame should have raw data annotation");
+    assert_eq!(child_raw.get("t1"), Some(&Annotation::Uint64(90)));
+    assert_eq!(child_raw.get("t2"), Some(&Annotation::Uint64(80)));
+    assert_eq!(child_raw.get("t3"), Some(&Annotation::Uint64(64)));
+    assert_eq!(child_raw.get("t4"), Some(&Annotation::Uint64(80)));
 
     let grandchild = &child.chunks().nth(1).unwrap();
     let grandchild = extract_frame_chunk(grandchild);
-    let grandchild_raw_data = grandchild
-        .annotations
-        .as_ref()
-        .unwrap()
-        .get(ANNOTATION_RAW_LATENCY_CATEGORY)
+    let grandchild_raw = MergingRawLatencies::extract(grandchild)
         .expect("Grandchild frame should have raw data annotation");
-    match grandchild_raw_data {
-        Annotation::Map(map) => {
-            assert_eq!(map.get("t1"), Some(&Annotation::Uint64(20)));
-            assert_eq!(map.get("t2"), Some(&Annotation::Uint64(25)));
-            assert!(!map.contains_key("t3"));
-            assert_eq!(map.get("t4"), Some(&Annotation::Uint64(50)));
-        }
-        _ => panic!("Expected grandchild raw data annotation to be a map"),
-    }
+    assert_eq!(grandchild_raw.get("t1"), Some(&Annotation::Uint64(20)));
+    assert_eq!(grandchild_raw.get("t2"), Some(&Annotation::Uint64(25)));
+    assert!(!grandchild_raw.contains_key("t3"));
+    assert_eq!(grandchild_raw.get("t4"), Some(&Annotation::Uint64(50)));
 }
 
 #[test]
